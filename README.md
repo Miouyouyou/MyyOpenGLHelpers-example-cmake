@@ -23,11 +23,16 @@ To build this example, you will need, at least:
 * OpenGL ES 2.x libraries (e.g. : libGLESv2 on *Nix systems)
 * EGL headers and libraries
 
-## X11 variant
-
 To build the X11 variant, you will also need:
 
-* X11 libraries and headers if you want to compile the X11 variant
+* X11 libraries and headers
+
+To build the DRM variant, you will need:
+
+* libdrm (headers and libraries)
+* gbm (headers and libraries)
+
+To build the Android APK, consult the README in the apk folder
 
 # Building
 
@@ -39,9 +44,19 @@ Clone this repository somewhere and then do:
 cd /tmp
 mkdir build_dir
 cd build_dir
-cmake /path/to/the/cloned/MyyOpenGLHelpers-example-cmake -DMYY_X11=ON
+cmake /path/to/project/sources -DMYY_X11=ON
 make
 ```
 
 Then you can run `Program`.
+
+## DRM variant
+
+```bash
+cd /tmp
+mkdir build_dir
+cd build_dir
+cmake /path/to/project/sources -DMYY_DRM=ON
+make
+```
 
