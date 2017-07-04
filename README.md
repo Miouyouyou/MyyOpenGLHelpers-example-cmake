@@ -41,7 +41,7 @@ cmake /path/to/the/cloned/MyyOpenGLHelpers-example-cmake -DMYY_X11=ON
 make
 ```
 
-## DRM variant
+## KMS/DRM variant
 
 To build the DRM variant, you will also need:
 
@@ -66,5 +66,5 @@ To build the Android variant, see the README.md in the
 
 Run `Program_X11` to run the X11 version, `Program_DRM` to run the
 KMS/DRM version. You'll need a mouse and keyboard plugged in, and
-accessible using libevdev if you intend to use the DRM/KMS version.
+accessible using libevdev if you intend to use the KMS/DRM version.
 
