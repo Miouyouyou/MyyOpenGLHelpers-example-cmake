@@ -19,8 +19,8 @@ these operations.
 To build this example, you will need, at least:
 
 * CMake version 2.8 or higher
-* OpenGL ES 3.1 headers
-* OpenGL ES 3.1 libraries (e.g. : libGLESv2 on \*Nix systems)
+* OpenGL ES 2.0 headers
+* OpenGL ES 2.0 libraries (e.g. : libGLESv2 on \*Nix systems)
 * EGL headers and libraries
 
 # Building
@@ -64,5 +64,7 @@ To build the Android variant, see the README.md in the
 
 # Running
 
-Run `Program` when the build finishes.
+Run `Program_X11` to run the X11 version, `Program_DRM` to run the
+KMS/DRM version. You'll need a mouse and keyboard plugged in, and
+accessible using libevdev if you intend to use the DRM/KMS version.
 
