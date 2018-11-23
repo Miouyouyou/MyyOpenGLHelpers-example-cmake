@@ -2,7 +2,7 @@
 #define MYY_GENERATED_OPENGL_ENUMS_H 1
 #include <myy/current/opengl.h>
 #include <stdint.h>
-enum glsl_files {
+enum glsl_file {
 	glsl_file_standard_vsh,
 	glsl_file_standard_fsh,
 	n_glsl_files,
@@ -37,12 +37,31 @@ struct glsl_shader {
 
 struct glsl_programs_shared_data {
 	GLuint programs[n_glsl_programs];
-	GLint  unifs[n_glsl_program_uniforms];
+	GLint  uniforms[n_glsl_program_uniforms];
 	struct glsl_shader shaders[n_glsl_files];
 	struct glsl_elements metadata[n_glsl_programs];
 	uint8_t strings[44];
 	uint8_t identifiers[42];
 };
+
+typedef GLuint uniform_location;
+typedef GLuint attribute_location;
+struct glsl_programs {
+	struct {
+		GLuint program_id;
+		/* uniforms locations */
+		struct {
+			uniform_location projection;
+			uniform_location pixel_offset;
+			uniform_location sampler;
+		} uniforms;
+		/* attributes location, used with glVertexAttribute */
+		struct {
+			attribute_location xyz;
+			attribute_location st;
+		} attributes;
+	} standard;
+} myy_glsl_programs;
 
 
 #endif
