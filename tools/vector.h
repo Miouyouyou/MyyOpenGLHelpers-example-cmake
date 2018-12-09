@@ -1,7 +1,7 @@
 #ifndef MYY_VECTOR_H
 #define MYY_VECTOR_H 1
 
-#if !defined(__cplusplus) && defined(MYY_C_TYPES)
+#if !defined(__cplusplus) && !defined(MYY_C_TYPES)
 #define MYY_C_TYPES
 enum bool_value { false, true };
 typedef uint_fast8_t bool;
@@ -81,7 +81,48 @@ static inline bool myy_vector_is_valid(
 static inline uint8_t * myy_vector_data(
 	struct myy_vector const * __restrict const vector)
 {
-	return (uint8_t const * __restrict) (vector->begin);
+	return (uint8_t * __restrict) (vector->begin);
 }
+
+
+/*static inline uint16_t * myy_vector_data_uint16(
+	struct myy_vector const * __restrict const vector)
+{
+	return (uint16_t const * __restrict) myy_vector_data(vector);
+}
+
+static inline struct myy_vector_init_uint16(
+	size_t const n_elements)
+{
+	myy_vector_init(n_elements * sizeof(uint16_t));
+}
+
+static inline bool myy_vector_add_uint16(
+	struct myy_vector * const vector,
+	size_t const n_elements,
+	uint16_t const * __restrict const source)
+{
+	return myy_vector_add(
+		vector,
+		n_elements * sizeof(uint16_t),
+		(uint8_t const * __restrict) source);
+}
+
+static inline size_t myy_vector_stored_uint16(
+	struct myy_vector * const vector)
+{
+	return myy_vector_last_offset(vector) / sizeof(uint16_t);
+}*/
+
+#define myy_vector_for_each(vector, T, name, ...) {\
+	T const * __restrict _cursor =         \
+		(T * __restrict) vector->begin;   \
+	T const * __restrict const _end =            \
+		(T * __restrict) vector->last;     \
+	while(_cursor < _end) {\
+		T const name = *_cursor++; \
+		__VA_ARGS__\
+	}\
+}\
 
 #endif

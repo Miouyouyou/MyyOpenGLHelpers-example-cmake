@@ -6,7 +6,7 @@
 
 #define ALIGN_ON_POW2(x, p) ((x)+(p-1) & ~(p-1))
 
-static bool myy_vector_add(
+bool myy_vector_add(
 	struct myy_vector * const vector,
 	size_t const n_octets,
 	uint8_t const * __restrict const source)
