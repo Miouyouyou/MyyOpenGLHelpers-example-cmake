@@ -4,8 +4,6 @@
 
 #include <vector.h>
 
-#define ALIGN_ON_POW2(x, p) ((x)+(p-1) & ~(p-1))
-
 bool myy_vector_add(
 	struct myy_vector * const vector,
 	size_t const n_octets,
@@ -18,10 +16,10 @@ bool myy_vector_add(
 	    myy_vector_expand_to_store_at_least(vector, n_octets))
 	{
 		memcpy(
-			(uint8_t * __restrict) vector->last,
+			(uint8_t * __restrict) vector->tail,
 			source,
 			n_octets);
-		vector->last += n_octets;
+		vector->tail += n_octets;
 		added = true;
 	}
 
@@ -33,10 +31,11 @@ struct myy_vector myy_vector_init(
 {
 	struct myy_vector vector;
 
-	size_t allocated_size = ALIGN_ON_POW2(allocated_size, 4096);
+	size_t allocated_size = ALIGN_ON_POW2(n_octets, 4096);
 	uintptr_t const begin = (uintptr_t) (malloc(allocated_size));
+	memset((void *) begin, 0, allocated_size);
 	vector.begin = begin;
-	vector.last  = begin;
+	vector.tail  = begin;
 	vector.end   = begin + allocated_size;
 
 	return vector;

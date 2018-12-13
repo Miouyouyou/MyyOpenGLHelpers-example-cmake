@@ -20,6 +20,8 @@ typedef uint_fast8_t bool;
 enum bool_value { false, true };
 #endif
 
+#define max(a,b) ((a) > (b) ? (a) : (b))
+
 enum program_status {
 	status_ok,
 	status_not_enough_arguments,
@@ -64,6 +66,7 @@ struct bitmap_metadata {
 	uint16_t height;
 	uint16_t stride;
 	uint16_t size;
+	uint8_t * data_address;
 };
 
 static inline void print_pixel(uint_fast8_t pixel_value)
@@ -111,22 +114,39 @@ could_not_load_character:
 }
 
 bool copy_char(FT_Face const face,
-	myy_vector_t * __restrict const bitmaps)
+	myy_vector_t * __restrict const bitmaps,
+	myy_vector_t * __restrict const bitmaps_metadata)
 {
+	bool ret = false;
 	FT_Bitmap const bitmap = face->glyph->bitmap;
 
-	struct bitmap_metadata added_bitmap = {
+	struct bitmap_metadata metadata = {
 		.width  = bitmap.width,
 		.height = bitmap.rows,
 		.stride = bitmap.pitch,
-		.size   = bitmap.rows * bitmap.pitch
+		.size   = bitmap.rows * bitmap.pitch,
 	};
 
-	return 
-		myy_vector_add(bitmaps, sizeof(added_bitmap),
-			(uint8_t const * __restrict) &added_bitmap)
-		&& myy_vector_add(bitmaps, added_bitmap.size,
-			bitmap.buffer);
+	ret = myy_vector_add(bitmaps_metadata,
+		sizeof(metadata),
+		(uint8_t const * __restrict) &metadata);
+
+	if (!ret) {
+		fprintf(stderr, "Could not add metadata\n");
+		goto out;
+	}
+
+	ret = myy_vector_add(bitmaps, metadata.size,
+		bitmap.buffer);
+	if (!ret) {
+		fprintf(stderr, "Could not generate the bitmap\n");
+		myy_vector_move_tail_back(bitmaps_metadata,
+			sizeof(metadata));
+		goto out;
+	}
+
+out:
+	return ret;
 }
 
 static FT_Face first_face_that_can_display(
@@ -146,53 +166,107 @@ static FT_Face first_face_that_can_display(
 	return NULL;
 }
 
+static void add_addresses_of_each_bitmap(
+	myy_vector_t const * __restrict const bitmaps_metadata,
+	myy_vector_t const * __restrict const bitmaps)
+{
+	uint8_t * __restrict cursor =
+		myy_vector_data(bitmaps);
+
+	int i = 0;
+	myy_vector_for_each_ptr(
+		bitmaps_metadata, struct bitmap_metadata, metadata,
+		{
+			metadata->data_address = cursor;
+			cursor += metadata->size;
+			i++;
+		}
+	);
+	printf("%d bitmaps\n", i);
+}
+
 void compute_each_bitmap_individually(
 	myy_vector_t const * __restrict const faces,
 	myy_vector_t const * __restrict const codepoints,
-	myy_vector_t * __restrict const bitmaps)
+	myy_vector_t * __restrict const bitmaps,
+	myy_vector_t * __restrict const bitmaps_metadata)
 {
 	myy_vector_for_each(codepoints, uint32_t, codepoint, {
 		FT_Face face =
 			first_face_that_can_display(faces, codepoint);
 		if (face != NULL && load_char(face, codepoint))
-			copy_char(face, bitmaps);
+			copy_char(face, bitmaps, bitmaps_metadata);
 	});
+	/* Since the bitmaps have flexible sizes and the
+	 * vector used to store them can expand when adding
+	 * data to it, and change its base address when
+	 * expanding, we compute the addresses of each bitmap
+	 * at the end.
+	 * The computing is done by scanning every metadata
+	 * adding the address of the current cursor in the
+	 * bitmaps metadata, and advance the cursor by the
+	 * bitmap size.
+	 */
+	add_addresses_of_each_bitmap(bitmaps_metadata,
+		bitmaps);
+}
+
+struct global_statistics {
+	size_t total_height;
+	size_t max_width;
+};
+
+struct global_statistics bitmaps_statistics(
+	myy_vector_t const * __restrict const bitmaps_metadata)
+{
+	struct global_statistics stats = {0, 0};
+
+	myy_vector_for_each(
+		bitmaps_metadata, struct bitmap_metadata, metadata,
+		{
+			/* Compute statistics */
+			stats.total_height += metadata.height;
+			stats.max_width    = max(stats.max_width, metadata.width);
+		}
+	);
+
+	return stats;
 }
 
 void print_bitmaps(
-	myy_vector_t const * __restrict const bitmap_vector)
+	myy_vector_t const * __restrict const bitmaps_metadata)
 {
-	uint8_t const * __restrict cursor =
-		myy_vector_data(bitmap_vector);
-	uint8_t const * __restrict const last =
-		(uint8_t const * __restrict)
-		(bitmap_vector->last);
 
+	printf("Miaou");
 	size_t total_height = 0;
 	size_t max_width    = 0;
-	while (cursor < last)
-	{
-		struct bitmap_metadata bitmap_data =
-			*((struct bitmap_metadata *) cursor);
-		total_height += bitmap_data.height;
-		max_width    = max_width > bitmap_data.width
-			? max_width
-			: bitmap_data.width;
-	
-		cursor += sizeof(bitmap_data);
 
-		printf("\n");
-		for (uint16_t h = 0; h < bitmap_data.height; h++)
+	myy_vector_for_each(
+		bitmaps_metadata, struct bitmap_metadata, metadata,
 		{
-			for (uint16_t w = 0; w < bitmap_data.width; w++)
+			uint8_t const * __restrict pixels =
+				metadata.data_address;
+
+			/* Compute statistics */
+			total_height += metadata.height;
+			max_width    = max_width > metadata.width
+				? max_width
+				: metadata.width;
+
+			/* Print the pixels */
+			printf("\n");
+			for (uint16_t h = 0; h < metadata.height; h++)
 			{
-				print_pixel(cursor[w]);
+				for (uint16_t w = 0; w < metadata.width; w++)
+				{
+					print_pixel(pixels[w]);
+				}
+				printf("\n");
+				pixels += metadata.stride;
 			}
 			printf("\n");
-			cursor += bitmap_data.stride;
 		}
-		printf("\n");
-	}
+	);
 
 	printf(
 		"Total height : %lu\n"
@@ -272,7 +346,7 @@ static void uniq(
 			sorted_codepoints[uniques++] = codepoint;
 	}
 
-	codepoints_data->last =
+	codepoints_data->tail =
 		(uintptr_t) (sorted_codepoints + uniques);
 }
 
@@ -361,12 +435,173 @@ ft_init_failed:
 	return false;
 }
 
+static int compare_bitmaps_by_width(void const * pa, void const * pb)
+{
+	struct bitmap_metadata * a = (struct bitmap_metadata *) pa;
+	struct bitmap_metadata * b = (struct bitmap_metadata *) pb;
+
+	return a->width - b->width;
+}
+
+static void sort_bitmaps_metadata_by_width(
+	myy_vector_t * __restrict const metadata)
+{
+	qsort(myy_vector_data(metadata),
+		myy_vector_last_offset(metadata)
+		/ sizeof(struct bitmap_metadata),
+		sizeof(struct bitmap_metadata),
+		compare_bitmaps_by_width);
+}
+
+
+
+/* TODO : Padding is hard coded right now.
+ * Provide the arguments for left and right padding.
+ * Use them in the utility functions
+ */
+static inline uint8_t * add_padding_left(uint8_t * __restrict texture)
+{
+	*texture++ = 0;
+	return texture;
+}
+
+/* TODO : Padding is hard coded right now.
+ * Provide the arguments for left and right padding.
+ * Use them in the utility functions
+ */
+static inline uint8_t * add_padding_right(uint8_t * __restrict texture)
+{
+	*texture++ = 0;
+	return texture;
+}
+
+/* TODO : Padding is hard coded right now.
+ * Provide the arguments for left and right padding.
+ * Use them in the utility functions
+ */
+static inline uint8_t * add_lower_padding(
+	uint8_t * __restrict texture,
+	uint16_t texture_width)
+{
+	while(--texture_width)
+		*texture++ = 0;
+
+	return texture;
+}
+
+/* TODO : Padding is hard coded right now.
+ * Provide the arguments for left and right padding.
+ * Use them in the utility functions
+ */
+static inline uint8_t * add_upper_padding(
+	uint8_t * __restrict texture,
+	uint16_t texture_width)
+{
+	while(--texture_width)
+		*texture++ = 0;
+
+	return texture;
+}
+
+/* TODO : Padding is hard coded right now.
+ * Provide the arguments for left and right padding.
+ * Use them in the utility functions
+ */
+static inline void blit(
+	uint8_t * __restrict dst,
+	uint16_t const dst_width,
+	struct bitmap_metadata bitmap_infos)
+{
+	uint8_t const * __restrict bitmap_cursor =
+		(uint8_t const * __restrict)
+		bitmap_infos.data_address;
+
+	for (uint16_t h = 0; h < bitmap_infos.height;
+	     h++,
+	     bitmap_cursor += bitmap_infos.stride)
+	{
+		uint8_t * __restrict const start = dst;
+		uint8_t line_width = bitmap_infos.width;
+		dst = add_padding_left(dst);
+		while (line_width--) {
+			*dst = *bitmap_cursor;
+			dst++;
+			bitmap_cursor++;
+		}
+		add_padding_right(dst);
+		dst = start + dst_width;
+	}
+}
+
+
+static void generate_bitmap(
+	myy_vector_t * bitmaps_metadata,
+	uint8_t * __restrict texture,
+	uint32_t const total_height,
+	uint32_t const max_height)
+{
+	uint32_t const padding = 1;
+	uint32_t const sides_padding = padding * 2;
+
+	/* TODO
+	 * This completely ignores the maximal padded width
+	 * of any character
+	 * If the maximum is 37 for example, you wouldn't
+	 * be able to fit a single character into one column.
+	 */
+	uint32_t const column_min_width = 32; /* px */
+
+	uint32_t const n_columns =
+		(max_height + total_height + sides_padding) / 4096;
+	uint32_t const total_width = column_min_width << (n_columns);
+
+	uint32_t h = 0;
+	uint32_t current_line_width = 0;
+	uint32_t current_line_max_height = 0;
+
+	uint8_t * __restrict const texture_start = texture;
+
+	texture = add_lower_padding(texture, total_width);
+	h += padding;
+
+	myy_vector_for_each(bitmaps_metadata,
+		struct bitmap_metadata, metadata,
+		{
+			uint32_t const added_width =
+				current_line_width + metadata.width + sides_padding;
+			if (added_width < total_width)
+			{
+				blit(texture, total_width, metadata);
+				current_line_max_height =
+					max(current_line_max_height, metadata.height);
+				current_line_width += metadata.width;
+				texture += added_width;
+			}
+			else if (metadata.width <= total_width)
+			{
+				h += current_line_max_height + padding;
+				texture = texture_start + (h * total_width);
+				blit(texture, total_width, metadata);
+				current_line_width = metadata.width;
+				current_line_max_height = metadata.height;
+			}
+		}
+	);
+
+	h += current_line_max_height + padding;
+
+	printf("total_width : %u\ntotal_height : %u\n", total_width, h);
+	uint16_t const n_pixels = h * total_width;
+	uint16_t const mask = total_width - 1;
+	for (uint_fast16_t p = 0; p < n_pixels; p++)
+	{
+		if (p % 64 == 0) printf("\n");
+		print_pixel(texture_start[p]);
+	}
+}
+
 #define BITMAP_AVERAGE_SIZE (20*25)
 /* TODO :
- * - Separate the bitmaps vector into 2 vectors :
- *   - 1 for the metadata : Sortable
- *   - 1 for the actual bitmaps : Used to generate the big bitmap.
- * - Sort bitmaps metadata by width
  * - Generate the big bitmap by packing as much elements on a
  *   single line.
  *   The whole logic is :
@@ -393,6 +628,13 @@ int main(int const argc, char const * const * const argv)
 		myy_vector_init(1024*BITMAP_AVERAGE_SIZE);
 	myy_vector_t codepoints =
 		myy_vector_init(1*1024*1024);
+	/* The texture isn't supposed to expand endlessly.
+	 * The maximum authorized size is 4Kx4K.
+	 * After that, you'll need another one.
+	 */
+	uint8_t * __restrict texture =
+		(uint8_t * __restrict) malloc(4096*4096);
+	memset(texture, 0, 4096*4096);
 
 	if (!myy_vector_is_valid(&faces))
 	{
@@ -462,8 +704,13 @@ int main(int const argc, char const * const * const argv)
 	}
 
 	compute_each_bitmap_individually(
-		&faces, &codepoints, &bitmaps);
-	print_bitmaps(&bitmaps);
+		&faces, &codepoints, &bitmaps, &bitmaps_metadata);
+	sort_bitmaps_metadata_by_width(&bitmaps_metadata);
+	//print_bitmaps(&bitmaps_metadata);
+	struct global_statistics global_metadata =
+		bitmaps_statistics(&bitmaps_metadata);
+	generate_bitmap(&bitmaps_metadata, texture,
+		global_metadata.max_width, global_metadata.total_height);
 
 	fonts_deinit(&library, &faces);
 could_not_initialize_fonts:

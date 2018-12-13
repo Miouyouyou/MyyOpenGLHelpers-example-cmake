@@ -7,9 +7,11 @@ enum bool_value { false, true };
 typedef uint_fast8_t bool;
 #endif
 
+#define ALIGN_ON_POW2(x, p) ((x)+(p-1) & ~(p-1))
+
 struct myy_vector {
 	uintptr_t begin;
-	uintptr_t last;
+	uintptr_t tail;
 	uintptr_t end;
 };
 
@@ -19,7 +21,7 @@ static inline bool myy_vector_can_add(
 	struct myy_vector const * __restrict const vector,
 	size_t const n_octets)
 {
-	return ((vector->last + n_octets) < vector->end);
+	return ((vector->tail + n_octets) < vector->end);
 }
 
 static inline size_t myy_vector_size(
@@ -31,7 +33,7 @@ static inline size_t myy_vector_size(
 static inline size_t myy_vector_last_offset(
 	struct myy_vector const * __restrict const vector)
 {
-	return vector->last - vector->begin;
+	return vector->tail - vector->begin;
 }
 
 static inline bool myy_vector_expand_to_store_at_least(
@@ -39,7 +41,8 @@ static inline bool myy_vector_expand_to_store_at_least(
 	size_t const n_octets)
 {
 	size_t const vector_size     = myy_vector_size(vector);
-	size_t const new_vector_size = vector_size + n_octets;
+	size_t const new_vector_size =
+		ALIGN_ON_POW2((vector_size + n_octets), 4096);
 	size_t const vector_last_offset =
 		myy_vector_last_offset(vector);
 	uintptr_t new_begin = (uintptr_t) realloc(
@@ -50,7 +53,7 @@ static inline bool myy_vector_expand_to_store_at_least(
 
 	if (success) {
 		vector->begin = new_begin;
-		vector->last  = new_begin + vector_last_offset;
+		vector->tail  = new_begin + vector_last_offset;
 		vector->end   = new_begin + new_vector_size;
 	}
 
@@ -84,6 +87,22 @@ static inline uint8_t * myy_vector_data(
 	return (uint8_t * __restrict) (vector->begin);
 }
 
+static inline void myy_vector_move_tail_back(
+	struct myy_vector * __restrict const vector,
+	size_t const n_octets)
+{
+	vector->tail -= n_octets;
+}
+
+static inline void myy_vector_inspect(
+	struct myy_vector * __restrict const vector)
+{
+	printf(
+		"Begin : 0x%016lx\n"
+		"Tail  : 0x%016lx\n"
+		"End   : 0x%016lx\n",
+		vector->begin, vector->tail, vector->end);
+}
 
 /*static inline uint16_t * myy_vector_data_uint16(
 	struct myy_vector const * __restrict const vector)
@@ -118,9 +137,27 @@ static inline size_t myy_vector_stored_uint16(
 	T const * __restrict _cursor =         \
 		(T * __restrict) vector->begin;   \
 	T const * __restrict const _end =            \
-		(T * __restrict) vector->last;     \
+		(T * __restrict) vector->tail;     \
 	while(_cursor < _end) {\
 		T const name = *_cursor++; \
+		__VA_ARGS__\
+	}\
+}\
+
+#define myy_vector_ptr_at(vector, T, index) ((T *) vector+index)
+
+#define myy_vector_at(vector, T, index) *(myy_vector_ptr_at(vector, T, index))
+
+#define myy_vector_count(vector, T) (myy_vector_last_offset(vector) / sizeof(T))
+
+#define myy_vector_for_each_ptr(vector, T, name, ...) {\
+	T * __restrict _cursor =         \
+		(T * __restrict) vector->begin;   \
+	T const * __restrict const _end =            \
+		(T * __restrict) vector->tail;     \
+	while(_cursor < _end) {\
+		T * __restrict const name = _cursor; \
+		_cursor++; \
 		__VA_ARGS__\
 	}\
 }\
