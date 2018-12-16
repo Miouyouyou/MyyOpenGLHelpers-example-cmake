@@ -483,7 +483,7 @@ static inline uint8_t * add_lower_padding(
 	uint8_t * __restrict texture,
 	uint16_t texture_width)
 {
-	while(--texture_width)
+	while(texture_width--)
 		*texture++ = 0;
 
 	return texture;
@@ -497,7 +497,7 @@ static inline uint8_t * add_upper_padding(
 	uint8_t * __restrict texture,
 	uint16_t texture_width)
 {
-	while(--texture_width)
+	while(texture_width--)
 		*texture++ = 0;
 
 	return texture;
@@ -521,14 +521,13 @@ static inline void blit(
 	     bitmap_cursor += bitmap_infos.stride)
 	{
 		uint8_t * __restrict const start = dst;
-		uint8_t line_width = bitmap_infos.width;
+
 		dst = add_padding_left(dst);
-		while (line_width--) {
-			*dst = *bitmap_cursor;
-			dst++;
-			bitmap_cursor++;
-		}
-		add_padding_right(dst);
+
+		for (uint_fast16_t p = 0; p < bitmap_infos.width; p++)
+			dst[p] = bitmap_cursor[p];
+
+		add_padding_right(dst+bitmap_infos.width);
 		dst = start + dst_width;
 	}
 }
@@ -567,22 +566,25 @@ static void generate_bitmap(
 	myy_vector_for_each(bitmaps_metadata,
 		struct bitmap_metadata, metadata,
 		{
+			uint32_t const padded_width =
+				metadata.width + sides_padding;
 			uint32_t const added_width =
-				current_line_width + metadata.width + sides_padding;
+				current_line_width + padded_width;
 			if (added_width < total_width)
 			{
 				blit(texture, total_width, metadata);
 				current_line_max_height =
 					max(current_line_max_height, metadata.height);
-				current_line_width += metadata.width;
-				texture += added_width;
+				current_line_width = added_width;
+				texture += padded_width;
 			}
 			else if (metadata.width <= total_width)
 			{
-				h += current_line_max_height + padding;
+				h += current_line_max_height + sides_padding;
 				texture = texture_start + (h * total_width);
 				blit(texture, total_width, metadata);
-				current_line_width = metadata.width;
+				texture += padded_width;
+				current_line_width = padded_width;
 				current_line_max_height = metadata.height;
 			}
 		}
@@ -590,14 +592,15 @@ static void generate_bitmap(
 
 	h += current_line_max_height + padding;
 
-	printf("total_width : %u\ntotal_height : %u\n", total_width, h);
-	uint16_t const n_pixels = h * total_width;
+	uint32_t const n_pixels = h * total_width;
 	uint16_t const mask = total_width - 1;
-	for (uint_fast16_t p = 0; p < n_pixels; p++)
+	for (uint_fast32_t p = 0; p < n_pixels; p++)
 	{
-		if (p % 64 == 0) printf("\n");
+		if ((p & mask) == mask) printf("\n");
 		print_pixel(texture_start[p]);
 	}
+
+	printf("total_width : %u\ntotal_height : %u\n", total_width, h);
 }
 
 #define BITMAP_AVERAGE_SIZE (20*25)
