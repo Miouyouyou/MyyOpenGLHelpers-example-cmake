@@ -14,6 +14,8 @@
 #include <myy/helpers/strings.h>
 #include <myy/helpers/file.h>
 
+#include <myy/helpers/fonts/packed_fonts_parser.h>
+
 #ifndef MYY_C_TYPES
 #define MYY_C_TYPES 1
 typedef uint_fast8_t bool;
@@ -61,12 +63,17 @@ char const * __restrict const status_messages[n_status] = {
 		"Could not load the codepoints for the chars file\n",
 };
 
+struct point_i16 {
+	int16_t x, y;
+};
+
 struct bitmap_metadata {
 	uint16_t width;
 	uint16_t height;
 	uint16_t stride;
 	uint16_t size;
 	uint8_t * data_address;
+	struct myy_packed_fonts_glyphdata * __restrict glyphdata;
 };
 
 static inline void print_pixel(uint_fast8_t pixel_value)
@@ -115,16 +122,27 @@ could_not_load_character:
 
 bool copy_char(FT_Face const face,
 	myy_vector_t * __restrict const bitmaps,
-	myy_vector_t * __restrict const bitmaps_metadata)
+	myy_vector_t * __restrict const bitmaps_metadata,
+	myy_vector_t * __restrict const glyph_metadata)
 {
 	bool ret = false;
-	FT_Bitmap const bitmap = face->glyph->bitmap;
+	FT_Glyph const glyph   = face->glyph;
+	FT_Bitmap const bitmap = glyph->bitmap;
+
+	struct myy_packed_fonts_glyphdata = {
+		.offset_x_px = glyph->metrics.horiBearingX >> 6,
+		.offset_y_px = glyph->metrics.horiBearingY >> 6,
+		.advance_x_px = glyph.advance.x >> 6,
+		.advance_y_px = glyph.advance.y >> 6,
+		.width_px = bitmap.width,
+		.height_px = bitmap.rows
+	};
 
 	struct bitmap_metadata metadata = {
 		.width  = bitmap.width,
 		.height = bitmap.rows,
 		.stride = bitmap.pitch,
-		.size   = bitmap.rows * bitmap.pitch,
+		.size   = bitmap.rows * bitmap.pitch
 	};
 
 	ret = myy_vector_add(bitmaps_metadata,
@@ -189,13 +207,14 @@ void compute_each_bitmap_individually(
 	myy_vector_t const * __restrict const faces,
 	myy_vector_t const * __restrict const codepoints,
 	myy_vector_t * __restrict const bitmaps,
-	myy_vector_t * __restrict const bitmaps_metadata)
+	myy_vector_t * __restrict const bitmaps_metadata,
+	myy_vector_t * __restrict const glyph_metadata)
 {
 	myy_vector_for_each(codepoints, uint32_t, codepoint, {
 		FT_Face face =
 			first_face_that_can_display(faces, codepoint);
 		if (face != NULL && load_char(face, codepoint))
-			copy_char(face, bitmaps, bitmaps_metadata);
+			copy_char(face, bitmaps, bitmaps_metadata, glyph_metadata);
 	});
 	/* Since the bitmaps have flexible sizes and the
 	 * vector used to store them can expand when adding
@@ -532,6 +551,32 @@ static inline void blit(
 	}
 }
 
+/* The dumb way */
+static uint_fast32_t ceil_to_power_of_2(uint_fast32_t const value)
+{
+	uint_fast32_t const values[] = {
+		1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096};
+	uint_fast32_t next_p2 = 1;
+
+	if (value > 4096) {
+		next_p2 = 4096;
+		goto out;
+	}
+
+	for (uint_fast32_t i = 0;
+	     i < sizeof(values)/sizeof(uint_fast32_t);
+	     i++)
+	{
+		uint_fast32_t const p2 = values[i];
+		if (value <= p2) {
+			next_p2 = p2;
+			break;
+		}
+	}
+
+out:
+	return next_p2;
+}
 
 static void generate_bitmap(
 	myy_vector_t * bitmaps_metadata,
@@ -573,6 +618,10 @@ static void generate_bitmap(
 			if (added_width < total_width)
 			{
 				blit(texture, total_width, metadata);
+				metadata.glyph_data->tex_left   = current_line_width;
+				metadata.glyph_data->tex_right  = current_line_width + metadata.width;
+				metadata.glyph_data->tex_bottom = h;
+				metadata.glyph_data->tex_top    = h+metadata.height;
 				current_line_max_height =
 					max(current_line_max_height, metadata.height);
 				current_line_width = added_width;
@@ -583,6 +632,10 @@ static void generate_bitmap(
 				h += current_line_max_height + sides_padding;
 				texture = texture_start + (h * total_width);
 				blit(texture, total_width, metadata);
+				metadata.glyph_data->tex_left   = 0;
+				metadata.glyph_data->tex_right  = metadata.width;
+				metadata.glyph_data->tex_bottom = h;
+				metadata.glyph_data->tex_top    = h+metadata.height;
 				texture += padded_width;
 				current_line_width = padded_width;
 				current_line_max_height = metadata.height;
@@ -592,6 +645,13 @@ static void generate_bitmap(
 
 	h += current_line_max_height + padding;
 
+	/* The "texture" is a prepared 4K * 4K texture.
+	 * It's already as its maximum AND every pixel is set 0
+	 * before hand.
+	 * So we don't need to pad with "0" again.
+	 */
+	uint_fast32_t const power_of_2_h = ceil_to_power_of_2(h);
+
 	uint32_t const n_pixels = h * total_width;
 	uint16_t const mask = total_width - 1;
 	for (uint_fast32_t p = 0; p < n_pixels; p++)
@@ -600,7 +660,16 @@ static void generate_bitmap(
 		print_pixel(texture_start[p]);
 	}
 
-	printf("total_width : %u\ntotal_height : %u\n", total_width, h);
+	int fd = open("fonts.raw", O_RDWR|O_CREAT, 00644);
+	if (fd >= 0) {
+		write(fd, texture_start, power_of_2_h * total_width);
+		close(fd);
+		printf("Written !\n");
+	}
+	printf("total_width : %u\ntotal_height : %lu (%u)\n",
+		total_width,
+		power_of_2_h,
+		h);
 }
 
 #define BITMAP_AVERAGE_SIZE (20*25)
@@ -627,6 +696,10 @@ int main(int const argc, char const * const * const argv)
 	myy_vector_t faces = myy_vector_init(sizeof(FT_Face)*16);
 	myy_vector_t bitmaps_metadata =
 		myy_vector_init(1024*sizeof(struct bitmap_metadata));
+	myy_vector_t bitmaps_metadata_sorted =
+		myy_vector_init(1024*sizeof(struct bitmap_metadata));
+	myy_vector_t glyph_metadata =
+		myy_vector_init(1024*sizeof(struct myy_packed_fonts_glyphdata));
 	myy_vector_t bitmaps =
 		myy_vector_init(1024*BITMAP_AVERAGE_SIZE);
 	myy_vector_t codepoints =
@@ -649,7 +722,18 @@ int main(int const argc, char const * const * const argv)
 		ret = status_not_enough_initial_memory_for_bitmaps_metadata;
 		goto not_enough_initial_memory_for_bitmaps_metadata;
 	}
-
+	if (!myy_vector_is_valid(&bitmaps_metadata_sorted))
+	{
+		// TODO : Change
+		ret = status_not_enough_initial_memory_for_bitmaps_metadata;
+		goto not_enough_initial_memory_for_sorted_metadata;
+	}
+	if (!myy_vector_is_valid(&glyph_metadata))
+	{
+		// TODO : Change
+		ret = status_not_enough_initial_memory_for_bitmaps_metadata;
+		goto not_enough_initial_memory_for_glyph_metadata;
+	}
 	if (!myy_vector_is_valid(&bitmaps))
 	{
 		ret = status_not_enough_initial_memory_for_bitmaps;
@@ -707,8 +791,8 @@ int main(int const argc, char const * const * const argv)
 	}
 
 	compute_each_bitmap_individually(
-		&faces, &codepoints, &bitmaps, &bitmaps_metadata);
-	sort_bitmaps_metadata_by_width(&bitmaps_metadata);
+		&faces, &codepoints, &bitmaps, &bitmaps_metadata, &glyph_metadata);
+	sort_bitmaps_metadata_by_width(&bitmaps_metadata, &bitmaps_metadata_sorted);
 	//print_bitmaps(&bitmaps_metadata);
 	struct global_statistics global_metadata =
 		bitmaps_statistics(&bitmaps_metadata);
@@ -725,6 +809,8 @@ not_enough_arguments:
 not_enough_initial_memory_for_codepoints:
 	myy_vector_free_content(bitmaps);
 not_enough_initial_memory_for_bitmaps:
+	myy_vector_free_content(bitmaps_metadata_sorted);
+not_enough_initial_memory_for_sorted_metadata:
 	myy_vector_free_content(bitmaps_metadata);
 not_enough_initial_memory_for_bitmaps_metadata:
 	myy_vector_free_content(faces);

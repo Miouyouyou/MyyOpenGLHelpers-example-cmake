@@ -1,15 +1,11 @@
 precision highp float;
 
-attribute vec4 xyz;
-attribute vec2 in_st;
+/* location = 5 */ attribute vec2 xy;
+/* location = 6 */ attribute vec2 in_st;
 
 varying vec2 st;
 
-uniform mat4 projection;
-uniform vec4 pixel_offset;
-
 void main() {
-	vec4 px_position = xyz + pixel_offset;
-	gl_Position = projection * px_position;
+	gl_Position = vec4(xy, 0.9, 1.0);
 	st = in_st;
 }
