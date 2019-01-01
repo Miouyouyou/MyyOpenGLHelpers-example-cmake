@@ -1,6 +1,11 @@
 #ifndef MYY_SHADERS_PACK_H
 #define MYY_SHADERS_PACK_H 1
 
+#include <myy/current/opengl.h>
+#include <myy/helpers/c_types.h>
+
+#include <stdint.h>
+
 /* The whole structure is designed like this :
  * [HEADER]   : pack_header
  * [PROGRAMS] : program_metadata (Name, Metadata_offset)
@@ -9,11 +14,12 @@
  * +--> [SHADERS_SECTION] : shaders_metadata
  * +--> [ATTRIBUTES_SECTION] : attributes_metadata
  * +--> [UNIFORMS_SECTION]   : uniforms_metadata
- *
+ * 
  * The "offset in struct" refers to a big data structure,
  * which definition is generated with the .pack file.
  * This data structure makes literal program a bit more
  * "literate", like :
+ * 
  * glUseProgram(myy_programs.heatmap.id);
  * glUniform1i(myy_programs.heatmap.uniform.sampler, ...);
  * 
@@ -21,7 +27,7 @@
  * uniforms ids inside the data structure, the offset of
  * each id inside the data structure is saved in the .pack
  * file and reused when loading a program with the provided
- * utility functions
+ * utility functions.
  */
 
 /* Absolute offsets start from the beginning of the file */
@@ -113,5 +119,25 @@ struct uniforms_metadata {
 	uint32_t n_uniforms;
 	struct uniform_metadata uniform[];
 };
+
+GLuint myy_shaders_pack_compile_program(
+	char    const * __restrict program_name,
+	struct program_definition_header const * __restrict const mdata,
+	uint8_t const * __restrict const data,
+	uint8_t       * __restrict const runtime_data);
+
+bool myy_shaders_pack_load_all_programs(
+	uint8_t const * __restrict const pack,
+	uint8_t       * __restrict const data_structure);
+
+bool myy_shaders_pack_load_all_programs_from_file(
+	char    const * __restrict const filepath,
+	uint8_t       * __restrict const data_structure);
+
+GLuint myy_shaders_pack_load_program(
+	uint8_t const * __restrict const pack,
+	uint8_t       * __restrict const data_structure,
+	char    const * __restrict const program_name,
+	size_t  const program_name_size);
 
 #endif

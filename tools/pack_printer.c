@@ -2,16 +2,9 @@
 #include <stdint.h>
 
 #include <myy/helpers/file.h>
+#include "myy_pack.h"
 
 #define MYYP_SIGNATURE 0x5059594D
-
-struct pack_header {
-	/* Must be 0x5059594D */
-	uint32_t signature;
-	uint32_t data_offset;
-	uint32_t metadata_offset;
-	uint32_t n_programs;
-};
 
 void print_header(
 	struct pack_header const * __restrict const header)
@@ -26,11 +19,6 @@ void print_header(
 		header->metadata_offset,
 		header->n_programs);
 }
-
-struct program_metadata {
-	uint32_t name_offset;
-	uint32_t metadata_offset;
-};
 
 void print_remaining_metadata(
 	uint8_t const * __restrict const metadata_section,
@@ -52,45 +40,6 @@ void print_program_metadata(
 		data_section);
 }
 
-struct program_definition_header {
-	uint32_t section_size;
-	uint32_t offset_in_struct;
-};
-
-struct shader_metadata {
-	uint32_t shader_type;
-	uint32_t data_size;
-	uint32_t data_offset;
-};
-
-struct shaders_metadata {
-	uint32_t section_size;
-	uint32_t n_shaders;
-	struct shader_metadata shader[];
-};
-
-struct attribute_metadata {
-	uint32_t name_offset;
-	uint32_t bind_id;
-};
-
-struct attributes_metadata {
-	uint32_t section_size;
-	uint32_t n_attributes;
-	struct attribute_metadata attribute[];
-};
-
-struct uniform_metadata {
-	uint32_t struct_offset;
-	uint32_t name_offset;
-};
-
-struct uniforms_metadata {
-	uint32_t section_size;
-	uint32_t n_uniforms;
-	struct uniform_metadata uniform[];
-};
-
 void print_remaining_metadata(
 	uint8_t const * __restrict const metadata_section,
 	uint8_t const * __restrict const data_section)
@@ -104,7 +53,7 @@ void print_remaining_metadata(
 
 	printf(
 		"-- Program definition header\n"
-		"Section size        : 0x%04x\n"
+		"Section size        : %d\n"
 		"Offset in structure : 0x%04x\n",
 		program_header->section_size,
 		program_header->offset_in_struct);
@@ -117,7 +66,7 @@ void print_remaining_metadata(
 
 	printf(
 		"-- Shaders metadata\n"
-		"Section_size : 0x%04x\n"
+		"Section_size : %d\n"
 		"N shaders    : %d\n",
 		shaders_mdata->section_size,
 		shaders_mdata->n_shaders);
@@ -149,7 +98,7 @@ void print_remaining_metadata(
 
 	printf(
 		"-- Attributes metadata\n"
-		"Section_size : 0x%04x\n"
+		"Section_size : %d\n"
 		"N attributes : %d\n",
 		attributes_mdata->section_size,
 		attributes_mdata->n_attributes);
@@ -176,7 +125,7 @@ void print_remaining_metadata(
 
 	printf(
 		"-- Uniforms metadata\n"
-		"Section_size : 0x%08x\n"
+		"Section_size : %d\n"
 		"N uniforms : %d\n",
 		uniforms_mdata->section_size,
 		uniforms_mdata->n_uniforms);

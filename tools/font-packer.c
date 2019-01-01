@@ -7,22 +7,45 @@
 #include <sys/stat.h>  // open
 #include <fcntl.h>     // open
 
-#include <unistd.h> // read, close
+#include <unistd.h>    // read, close
 
 #include <vector.h>
 
 #include <myy/helpers/strings.h>
 #include <myy/helpers/file.h>
-
 #include <myy/helpers/fonts/packed_fonts_parser.h>
+#include <myy/helpers/opengl/loaders.h>
+#include <myy/helpers/c_types.h>
+#include <myy/helpers/log.h>
 
-#ifndef MYY_C_TYPES
-#define MYY_C_TYPES 1
-typedef uint_fast8_t bool;
-enum bool_value { false, true };
-#endif
+
 
 #define max(a,b) ((a) > (b) ? (a) : (b))
+
+static inline uint16_t normalized_u16(
+	uint_fast32_t size, uint_fast32_t total_size)
+{
+	return (uint16_t) ((size * 65535) / total_size);
+}
+
+static inline uint16_t renormalize_u16(
+	uint16_t * __restrict const value,
+	uint_fast32_t const total_size)
+{
+	uint_fast32_t current_value = *value;
+	*value = normalized_u16(current_value, total_size);
+}
+
+static void normalize_tex_coordinates(
+	struct myy_packed_fonts_glyphdata * __restrict const glyphdata,
+	uint_fast32_t total_width,
+	uint_fast32_t total_height)
+{
+	renormalize_u16(&glyphdata->tex_left,   total_width);
+	renormalize_u16(&glyphdata->tex_right,  total_width);
+	renormalize_u16(&glyphdata->tex_bottom, total_height);
+	renormalize_u16(&glyphdata->tex_top,    total_height);
+}
 
 enum program_status {
 	status_ok,
@@ -36,6 +59,10 @@ enum program_status {
 	status_font_filepath_does_not_exist,
 	status_chars_filepath_does_not_exist,
 	status_could_not_load_codepoints_from_file,
+	status_could_not_open_bitmap_output_file,
+	status_could_not_open_metadata_output_file,
+	status_could_not_write_bitmap_file,
+	status_could_not_write_metadata_file,
 	n_status
 };
 
@@ -61,6 +88,14 @@ char const * __restrict const status_messages[n_status] = {
 		"The chars filepath does not exist\n",
 	[status_could_not_load_codepoints_from_file] =
 		"Could not load the codepoints for the chars file\n",
+	[status_could_not_open_bitmap_output_file] =
+		"Could not create or write into the bitmap output file\n",
+	[status_could_not_open_metadata_output_file] =
+		"Could not create or write into the metadata output file\n",
+	[status_could_not_write_bitmap_file] =
+		"Failed to write the whole bitmap file\n",
+	[status_could_not_write_metadata_file] =
+		"Failed to write the whole metadata file\n",
 };
 
 struct point_i16 {
@@ -73,7 +108,7 @@ struct bitmap_metadata {
 	uint16_t stride;
 	uint16_t size;
 	uint8_t * data_address;
-	struct myy_packed_fonts_glyphdata * __restrict glyphdata;
+	uint32_t index;
 };
 
 static inline void print_pixel(uint_fast8_t pixel_value)
@@ -120,20 +155,32 @@ could_not_load_character:
 
 }
 
-bool copy_char(FT_Face const face,
+bool copy_char(
+	FT_Face const face,
+	uint32_t max_height,
 	myy_vector_t * __restrict const bitmaps,
 	myy_vector_t * __restrict const bitmaps_metadata,
-	myy_vector_t * __restrict const glyph_metadata)
+	myy_vector_t * __restrict const glyphs_metadata)
 {
 	bool ret = false;
-	FT_Glyph const glyph   = face->glyph;
-	FT_Bitmap const bitmap = glyph->bitmap;
+	FT_GlyphSlot const glyph   = face->glyph;
+	FT_Bitmap const bitmap     = glyph->bitmap;
 
-	struct myy_packed_fonts_glyphdata = {
-		.offset_x_px = glyph->metrics.horiBearingX >> 6,
-		.offset_y_px = glyph->metrics.horiBearingY >> 6,
-		.advance_x_px = glyph.advance.x >> 6,
-		.advance_y_px = glyph.advance.y >> 6,
+	struct myy_packed_fonts_glyphdata glyph_metadata = {
+		.offset_x_px =
+			glyph->metrics.horiBearingX >> 6,
+		.offset_y_px = 
+			(glyph->metrics.horiBearingY - glyph->metrics.height) >> 6,
+		.advance_x_px = glyph->advance.x >> 6,
+		/* Why store this everytime instead of storing it one time...
+		 * Hmm...
+		 * The questions would be :
+		 * - Where to store it then ?
+		 * - Is there real benefits to storing it once ?
+		 * The data will all be loaded AND used at once
+		 * during display.
+		 */
+		.advance_y_px = max_height,
 		.width_px = bitmap.width,
 		.height_px = bitmap.rows
 	};
@@ -142,7 +189,10 @@ bool copy_char(FT_Face const face,
 		.width  = bitmap.width,
 		.height = bitmap.rows,
 		.stride = bitmap.pitch,
-		.size   = bitmap.rows * bitmap.pitch
+		.size   = bitmap.rows * bitmap.pitch,
+		.index  =
+			myy_vector_last_offset(bitmaps_metadata) /
+			sizeof(struct bitmap_metadata)
 	};
 
 	ret = myy_vector_add(bitmaps_metadata,
@@ -151,19 +201,31 @@ bool copy_char(FT_Face const face,
 
 	if (!ret) {
 		fprintf(stderr, "Could not add metadata\n");
-		goto out;
+		goto could_not_add_the_bitmap_metadata;
+	}
+
+	ret = myy_vector_add(glyphs_metadata,
+		sizeof(glyph_metadata),
+		(uint8_t const * __restrict) &glyph_metadata);
+	if (!ret) {
+		fprintf(stderr, "Could not add the glyph metadata\n");
+		goto could_not_add_the_glyph_metadata;
 	}
 
 	ret = myy_vector_add(bitmaps, metadata.size,
 		bitmap.buffer);
 	if (!ret) {
 		fprintf(stderr, "Could not generate the bitmap\n");
-		myy_vector_move_tail_back(bitmaps_metadata,
-			sizeof(metadata));
-		goto out;
+		goto could_not_add_the_bitmap;
 	}
 
-out:
+	return ret;
+
+could_not_add_the_bitmap:
+	myy_vector_move_tail_back(glyphs_metadata, sizeof(glyph_metadata));
+could_not_add_the_glyph_metadata:
+	myy_vector_move_tail_back(bitmaps_metadata, sizeof(metadata));
+could_not_add_the_bitmap_metadata:
 	return ret;
 }
 
@@ -203,6 +265,17 @@ static void add_addresses_of_each_bitmap(
 	printf("%d bitmaps\n", i);
 }
 
+uint32_t max_height_of_all_faces(
+	myy_vector_t const * __restrict const faces)
+{
+	uint32_t max_height = 0;
+	myy_vector_for_each(faces, FT_Face, face, {
+		max_height = 
+			max(max_height, (face->size->metrics.height >> 6));
+	});
+	return max_height;
+}
+
 void compute_each_bitmap_individually(
 	myy_vector_t const * __restrict const faces,
 	myy_vector_t const * __restrict const codepoints,
@@ -210,24 +283,28 @@ void compute_each_bitmap_individually(
 	myy_vector_t * __restrict const bitmaps_metadata,
 	myy_vector_t * __restrict const glyph_metadata)
 {
+	uint32_t const max_height =
+		max_height_of_all_faces(faces);
+	uint32_t const advance_y = -max_height;
 	myy_vector_for_each(codepoints, uint32_t, codepoint, {
 		FT_Face face =
 			first_face_that_can_display(faces, codepoint);
 		if (face != NULL && load_char(face, codepoint))
-			copy_char(face, bitmaps, bitmaps_metadata, glyph_metadata);
+			copy_char(face, -max_height, bitmaps, bitmaps_metadata, glyph_metadata);
 	});
 	/* Since the bitmaps have flexible sizes and the
 	 * vector used to store them can expand when adding
 	 * data to it, and change its base address when
 	 * expanding, we compute the addresses of each bitmap
 	 * at the end.
-	 * The computing is done by scanning every metadata
-	 * adding the address of the current cursor in the
-	 * bitmaps metadata, and advance the cursor by the
-	 * bitmap size.
+	 * Every metadata index is relative to the bitmap index.
+	 * Then the procedure is roughly like this :
+	 * Set the cursor to the packed bitmaps buffer start
+	 * for each metadata :
+	 *   Copy metadata.size octets from the bitmaps buffer.
+	 *   Advance the cursor by metadata.size octets
 	 */
-	add_addresses_of_each_bitmap(bitmaps_metadata,
-		bitmaps);
+	add_addresses_of_each_bitmap(bitmaps_metadata, bitmaps);
 }
 
 struct global_statistics {
@@ -494,10 +571,6 @@ static inline uint8_t * add_padding_right(uint8_t * __restrict texture)
 	return texture;
 }
 
-/* TODO : Padding is hard coded right now.
- * Provide the arguments for left and right padding.
- * Use them in the utility functions
- */
 static inline uint8_t * add_lower_padding(
 	uint8_t * __restrict texture,
 	uint16_t texture_width)
@@ -508,10 +581,6 @@ static inline uint8_t * add_lower_padding(
 	return texture;
 }
 
-/* TODO : Padding is hard coded right now.
- * Provide the arguments for left and right padding.
- * Use them in the utility functions
- */
 static inline uint8_t * add_upper_padding(
 	uint8_t * __restrict texture,
 	uint16_t texture_width)
@@ -578,12 +647,68 @@ out:
 	return next_p2;
 }
 
-static void generate_bitmap(
-	myy_vector_t * bitmaps_metadata,
+static void normalize_coordinates(
+	myy_vector_t * __restrict const glyphsdata,
+	uint_fast32_t texture_width,
+	uint_fast32_t texture_height)
+{
+	myy_vector_for_each_ptr(glyphsdata,
+		struct myy_packed_fonts_glyphdata, glyph_data,
+		{
+			normalize_tex_coordinates(glyph_data,
+				texture_width,
+				texture_height);
+		}
+	);
+}
+
+static bool write_bitmap(
+	int output_fd,
+	uint8_t const * __restrict const texture_data,
+	uint32_t width,
+	uint32_t height)
+{
+	struct myy_raw_texture_header header = {
+		.signature = MYYT_SIGNATURE,
+		.width     = width,
+		.height    = height,
+		.gl_target = GL_TEXTURE_2D,
+		.gl_format = GL_ALPHA,
+		.gl_type   = GL_UNSIGNED_BYTE,
+		.alignment = 4,
+		.reserved  = 0
+	};
+
+	int64_t written = write(output_fd, &header, sizeof(header));
+
+	if (written != sizeof(header))
+		goto could_not_write_header;
+
+	written = write(output_fd, texture_data, width * height);
+	if (written != (width * height))
+		goto could_not_write_texture;
+
+	sync();
+
+	return true;
+
+could_not_write_texture:
+could_not_write_header:
+	perror("Could not write the entire texture !\n");
+	return false;
+}
+
+static bool generate_bitmap(
+	myy_vector_t * __restrict const bitmaps_metadata,
 	uint8_t * __restrict texture,
 	uint32_t const total_height,
-	uint32_t const max_height)
+	uint32_t const max_height,
+	myy_vector_t * __restrict const glyphs_vector,
+	int output_fd)
 {
+	struct myy_packed_fonts_glyphdata * __restrict const glyph_gldata =
+		(struct myy_packed_fonts_glyphdata * __restrict)
+		myy_vector_data(glyphs_vector);
 	uint32_t const padding = 1;
 	uint32_t const sides_padding = padding * 2;
 
@@ -615,13 +740,16 @@ static void generate_bitmap(
 				metadata.width + sides_padding;
 			uint32_t const added_width =
 				current_line_width + padded_width;
+			struct myy_packed_fonts_glyphdata * __restrict const
+				current_glyph = glyph_gldata+metadata.index;
 			if (added_width < total_width)
 			{
 				blit(texture, total_width, metadata);
-				metadata.glyph_data->tex_left   = current_line_width;
-				metadata.glyph_data->tex_right  = current_line_width + metadata.width;
-				metadata.glyph_data->tex_bottom = h;
-				metadata.glyph_data->tex_top    = h+metadata.height;
+				current_glyph->tex_left   = 1 + current_line_width;
+				current_glyph->tex_right  =
+					1 + current_line_width + metadata.width;
+				current_glyph->tex_bottom = h;
+				current_glyph->tex_top    = h+metadata.height;
 				current_line_max_height =
 					max(current_line_max_height, metadata.height);
 				current_line_width = added_width;
@@ -632,10 +760,10 @@ static void generate_bitmap(
 				h += current_line_max_height + sides_padding;
 				texture = texture_start + (h * total_width);
 				blit(texture, total_width, metadata);
-				metadata.glyph_data->tex_left   = 0;
-				metadata.glyph_data->tex_right  = metadata.width;
-				metadata.glyph_data->tex_bottom = h;
-				metadata.glyph_data->tex_top    = h+metadata.height;
+				current_glyph->tex_left   = 1;
+				current_glyph->tex_right  = metadata.width + 1;
+				current_glyph->tex_bottom = h;
+				current_glyph->tex_top    = h+metadata.height;
 				texture += padded_width;
 				current_line_width = padded_width;
 				current_line_max_height = metadata.height;
@@ -652,6 +780,7 @@ static void generate_bitmap(
 	 */
 	uint_fast32_t const power_of_2_h = ceil_to_power_of_2(h);
 
+	normalize_coordinates(glyphs_vector, total_width, power_of_2_h);
 	uint32_t const n_pixels = h * total_width;
 	uint16_t const mask = total_width - 1;
 	for (uint_fast32_t p = 0; p < n_pixels; p++)
@@ -660,16 +789,189 @@ static void generate_bitmap(
 		print_pixel(texture_start[p]);
 	}
 
-	int fd = open("fonts.raw", O_RDWR|O_CREAT, 00644);
-	if (fd >= 0) {
-		write(fd, texture_start, power_of_2_h * total_width);
-		close(fd);
-		printf("Written !\n");
-	}
+	printf("Written !\n");
+
 	printf("total_width : %u\ntotal_height : %lu (%u)\n",
 		total_width,
 		power_of_2_h,
 		h);
+
+	return 
+		write_bitmap(output_fd, texture_start, total_width, power_of_2_h);
+}
+
+#define write_or_bailout(written, fd, data, data_size, label) { \
+	written = write(fd, data, data_size);\
+	if (written != data_size)\
+		goto label;\
+}
+bool generate_metadata_file(
+	int output_file_fd,
+	char const * __restrict const texture_filename,
+	myy_vector_t const * __restrict const codepoints,
+	myy_vector_t const * __restrict const glyphs)
+{
+
+	uint16_t const padding[16] = {0};
+	uint32_t const texture_filename_size = strlen(texture_filename);
+	fprintf(stderr, "texture_filename_size : %d\n", texture_filename_size);
+	struct myy_packed_fonts_textures_filename filename = {
+		.size = texture_filename_size,
+	};
+	uint_fast8_t const texture_filename_padding =
+		filename.size - texture_filename_size;
+
+	struct myy_packed_fonts_textures_filenames_section const
+		filenames_section_header =
+	{
+		.n_filenames = 1
+	};
+
+	struct myy_packed_fonts_info_header header = {
+		.signature = MYYF_SIGNATURE,
+		.n_stored_codepoints =
+			myy_vector_last_offset(codepoints)/sizeof(uint32_t),
+		.codepoints_start_offset  = 0,
+		.glyphdata_start_offset   = 0,
+		.texture_filenames_offset = 0,
+		.unused = {0,0}
+	};
+
+	fprintf(stderr, "Writing the header\n");
+	/* Write the dummy header */
+	uint32_t offset = 0;
+	int written = write(output_file_fd, &header, sizeof(header));
+	if (written != sizeof(header))
+		goto bail_out;
+	offset += written;
+
+	header.texture_filenames_offset = offset;
+	/* Write the filenames section */
+	{
+		uint32_t texture_filename_size_added_padding;
+		uint32_t section_padding;
+		uint32_t offset_after_texture_filename;
+		write_or_bailout(written,
+			output_file_fd,
+			&filenames_section_header,
+			sizeof(filenames_section_header),
+			bail_out);
+		offset += written;
+
+		/* The "size" needs to be rewritten as
+		 * section_size
+		 * or something like this.
+		 * If you need the string size, just throw strlen on it
+		 * or count characters until you hit 0.
+		 * The size is here to move the cursor to the next string.
+		 */
+		offset_after_texture_filename =
+			offset + sizeof(filename) + texture_filename_size;
+		texture_filename_size_added_padding =
+			ALIGN_ON_POW2(offset_after_texture_filename, 8)
+			- offset_after_texture_filename;
+		filename.size += texture_filename_size_added_padding;
+
+		write_or_bailout(written, 
+			output_file_fd,
+			&filename,
+			sizeof(filename),
+			bail_out);
+		offset += written;
+		
+		write_or_bailout(written,
+			output_file_fd,
+			texture_filename,
+			texture_filename_size,
+			bail_out);
+		offset += written;
+
+		write_or_bailout(written,
+			output_file_fd,
+			padding,
+			texture_filename_size_added_padding,
+			bail_out);
+		offset += written;
+
+		section_padding = ALIGN_ON_POW2(offset, 16) - offset;
+		write_or_bailout(written,
+			output_file_fd,
+			padding,
+			section_padding,
+			bail_out);
+		offset += written;
+	}
+	fprintf(stderr, "Filenames written\n");
+	header.codepoints_start_offset = offset;
+
+	/* Write the codepoints section */
+	{
+		/* filename.size is rounded to 8 to avoid unaligned accesses */
+		size_t const codepoints_size =
+			myy_vector_last_offset(codepoints);
+		size_t codepoints_padding;
+
+		write_or_bailout(written,
+			output_file_fd,
+			myy_vector_data(codepoints),
+			codepoints_size,
+			bail_out);
+		offset += written;
+
+		fprintf(stderr, "Written the codepoints\n");
+
+		codepoints_padding =
+			ALIGN_ON_POW2(offset, 16) - offset;
+		write_or_bailout(written,
+			output_file_fd,
+			padding,
+			codepoints_padding,
+			bail_out);
+		offset += written;
+	}
+	fprintf(stderr, "Codepoints written\n");
+	header.glyphdata_start_offset = offset;
+
+	/* Write the glyphs metadata section */
+	{
+		size_t const glyphs_size =
+			myy_vector_last_offset(glyphs);
+		size_t glyphs_padding;
+
+		write_or_bailout(written,
+			output_file_fd,
+			myy_vector_data(glyphs),
+			glyphs_size,
+			bail_out);
+		offset += written;
+
+		glyphs_padding = ALIGN_ON_POW2(offset, 16) - offset;
+		write_or_bailout(written,
+			output_file_fd,
+			padding,
+			glyphs_padding,
+			bail_out);
+		offset += written;
+	}
+	LOG("Glyphs written\n");
+	/* Let's make sure that things won't go wrong when seeking to
+	 * the beginning
+	 */
+	sync();
+
+	/* Write the correct header this time */
+	lseek(output_file_fd, 0, SEEK_SET);
+	written = write(output_file_fd, &header, sizeof(header));
+	if (written != sizeof(header))
+		goto bail_out;
+
+	/* Sync one more time, now that all the data are written */
+	sync();
+	return true;
+
+bail_out:
+	perror("Could not write all the metadata\n");
+	return false;
 }
 
 #define BITMAP_AVERAGE_SIZE (20*25)
@@ -690,20 +992,20 @@ int main(int const argc, char const * const * const argv)
 	int n_fonts;
 	char const * const * __restrict fonts_filepath;
 	char const * __restrict chars_filepath;
+	int output_bitmap_fd;
+	int output_metadata_fd;
 
 	bool bool_ret;
 	FT_Library library;
 	myy_vector_t faces = myy_vector_init(sizeof(FT_Face)*16);
 	myy_vector_t bitmaps_metadata =
 		myy_vector_init(1024*sizeof(struct bitmap_metadata));
-	myy_vector_t bitmaps_metadata_sorted =
-		myy_vector_init(1024*sizeof(struct bitmap_metadata));
 	myy_vector_t glyph_metadata =
 		myy_vector_init(1024*sizeof(struct myy_packed_fonts_glyphdata));
 	myy_vector_t bitmaps =
 		myy_vector_init(1024*BITMAP_AVERAGE_SIZE);
 	myy_vector_t codepoints =
-		myy_vector_init(1*1024*1024);
+		myy_vector_init(4*1024*1024);
 	/* The texture isn't supposed to expand endlessly.
 	 * The maximum authorized size is 4Kx4K.
 	 * After that, you'll need another one.
@@ -711,6 +1013,8 @@ int main(int const argc, char const * const * const argv)
 	uint8_t * __restrict texture =
 		(uint8_t * __restrict) malloc(4096*4096);
 	memset(texture, 0, 4096*4096);
+	char const * __restrict const bitmap_filename =
+		"fonts_bitmap.myyraw";
 
 	if (!myy_vector_is_valid(&faces))
 	{
@@ -721,12 +1025,6 @@ int main(int const argc, char const * const * const argv)
 	{
 		ret = status_not_enough_initial_memory_for_bitmaps_metadata;
 		goto not_enough_initial_memory_for_bitmaps_metadata;
-	}
-	if (!myy_vector_is_valid(&bitmaps_metadata_sorted))
-	{
-		// TODO : Change
-		ret = status_not_enough_initial_memory_for_bitmaps_metadata;
-		goto not_enough_initial_memory_for_sorted_metadata;
 	}
 	if (!myy_vector_is_valid(&glyph_metadata))
 	{
@@ -776,6 +1074,24 @@ int main(int const argc, char const * const * const argv)
 		goto chars_filepath_does_not_exist;
 	}
 
+	/* Check if we can open all the output files before
+	 * doing any serious computation
+	 */
+	output_bitmap_fd = 
+		open(bitmap_filename, O_RDWR|O_CREAT, 00666);
+	if (output_bitmap_fd < 0) {
+		ret = status_could_not_open_bitmap_output_file;
+		goto could_not_open_bitmap_output_file;
+	}
+
+	output_metadata_fd =
+		open("font_pack_meta.dat", O_RDWR|O_CREAT, 00666);
+	if (output_metadata_fd < 0) {
+		ret = status_could_not_open_metadata_output_file;
+		goto could_not_open_metadata_output_file;
+	}
+
+	/* Load the codepoints, store them and sort them */
 	bool_ret = load_codepoints_from_chars_file(
 		&codepoints, chars_filepath);
 	if (!bool_ret)
@@ -784,24 +1100,68 @@ int main(int const argc, char const * const * const argv)
 		goto could_not_load_codepoints_from_file;
 	}
 
+	/* TODO Maybe this should be done before... */
 	if (!fonts_init(&library, fonts_filepath, n_fonts, &faces))
 	{
 		ret = status_could_not_initialize_fonts;
 		goto could_not_initialize_fonts;
 	}
 
+	/* Copy each bitmap individually.
+	 * TODO Freetype actually provide facilities to copy bitmap.
+	 *      Investigate this. This could ease our work tenfold.
+	 */
 	compute_each_bitmap_individually(
 		&faces, &codepoints, &bitmaps, &bitmaps_metadata, &glyph_metadata);
-	sort_bitmaps_metadata_by_width(&bitmaps_metadata, &bitmaps_metadata_sorted);
 	//print_bitmaps(&bitmaps_metadata);
+
+	/* Sort the bitmaps by width, in order to align them afterwards.
+	 * We don't do any serious packing work here.
+	 * We pack the characters from narrow to wide.
+	 */
+	sort_bitmaps_metadata_by_width(&bitmaps_metadata);
+
+	/* Determine the sum of every character height
+	 * and the maximum width
+	 * TODO The total height computation doesn't take
+	 *      padding into account.
+	 */
 	struct global_statistics global_metadata =
 		bitmaps_statistics(&bitmaps_metadata);
-	generate_bitmap(&bitmaps_metadata, texture,
-		global_metadata.max_width, global_metadata.total_height);
+
+	/* Generate the texture and write it */
+	bool_ret = generate_bitmap(
+		&bitmaps_metadata,
+		texture,
+		global_metadata.max_width, global_metadata.total_height,
+		&glyph_metadata,
+		output_bitmap_fd);
+	if (!bool_ret) {
+		ret = status_could_not_write_bitmap_file;
+		goto could_not_write_bitmap_file;
+	}
+
+	/* Generate and write down the metadata file */
+	bool_ret = generate_metadata_file(
+		output_metadata_fd,
+		bitmap_filename,
+		&codepoints,
+		&glyph_metadata);
+	if (!bool_ret) {
+		ret = status_could_not_write_metadata_file;
+		goto could_not_write_metadata_file;
+	}
 
 	fonts_deinit(&library, &faces);
+
+could_not_write_metadata_file:
+could_not_write_bitmap_file:
 could_not_initialize_fonts:
 could_not_load_codepoints_from_file:
+	close(output_metadata_fd);
+could_not_open_metadata_output_file:
+	close(output_bitmap_fd);
+could_not_open_bitmap_output_file:
 chars_filepath_does_not_exist:
 font_filepath_does_not_exist:
 not_enough_arguments:
@@ -809,8 +1169,8 @@ not_enough_arguments:
 not_enough_initial_memory_for_codepoints:
 	myy_vector_free_content(bitmaps);
 not_enough_initial_memory_for_bitmaps:
-	myy_vector_free_content(bitmaps_metadata_sorted);
-not_enough_initial_memory_for_sorted_metadata:
+	myy_vector_free_content(glyph_metadata);
+not_enough_initial_memory_for_glyph_metadata:
 	myy_vector_free_content(bitmaps_metadata);
 not_enough_initial_memory_for_bitmaps_metadata:
 	myy_vector_free_content(faces);
