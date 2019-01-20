@@ -15,6 +15,9 @@ Extra Arguments=
 Install Directory=/usr/local
 Runtime=Système hôte
 
+[Cppcheck]
+extraParameters=-I /home/gamer/Myy/UnlimitedScrolling -I /home/gamer/Myy/UnlimitedScrolling/myy
+
 [Launch]
 Launch Configurations=Launch Configuration 0
 
@@ -38,3 +41,6 @@ isExecutable=false
 
 [Project]
 VersionControlSupport=kdevgit
+
+[SourceFileTemplates]
+LastUsedTemplate=/home/gamer/.local/share/kdevfiletemplates/template_descriptions/cmake_module.desktop

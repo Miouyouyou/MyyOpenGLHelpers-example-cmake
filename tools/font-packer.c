@@ -8,8 +8,7 @@
 #include <fcntl.h>     // open
 
 #include <unistd.h>    // read, close
-
-#include <vector.h>
+#undef NDEBUG
 
 #include <myy/helpers/strings.h>
 #include <myy/helpers/file.h>
@@ -17,23 +16,24 @@
 #include <myy/helpers/opengl/loaders.h>
 #include <myy/helpers/c_types.h>
 #include <myy/helpers/log.h>
-
-
+#include <myy/helpers/vector.h>
 
 #define max(a,b) ((a) > (b) ? (a) : (b))
 
 static inline uint16_t normalized_u16(
-	uint_fast32_t size, uint_fast32_t total_size)
+	uint_fast32_t size, uint_fast32_t total_size, double offset)
 {
-	return (uint16_t) ((size * 65535) / total_size);
+	double offseted_size = offset + size;
+	return (uint16_t) (offseted_size * 65535.0 / total_size);;
 }
 
 static inline uint16_t renormalize_u16(
 	uint16_t * __restrict const value,
-	uint_fast32_t const total_size)
+	uint_fast32_t const total_size,
+	double offset)
 {
 	uint_fast32_t current_value = *value;
-	*value = normalized_u16(current_value, total_size);
+	*value = normalized_u16(current_value, total_size, offset);
 }
 
 static void normalize_tex_coordinates(
@@ -41,10 +41,10 @@ static void normalize_tex_coordinates(
 	uint_fast32_t total_width,
 	uint_fast32_t total_height)
 {
-	renormalize_u16(&glyphdata->tex_left,   total_width);
-	renormalize_u16(&glyphdata->tex_right,  total_width);
-	renormalize_u16(&glyphdata->tex_bottom, total_height);
-	renormalize_u16(&glyphdata->tex_top,    total_height);
+	renormalize_u16(&glyphdata->tex_left,   total_width,  0);
+	renormalize_u16(&glyphdata->tex_right,  total_width,  0);
+	renormalize_u16(&glyphdata->tex_bottom, total_height, 0);
+ 	renormalize_u16(&glyphdata->tex_top,    total_height, 0);
 }
 
 enum program_status {
@@ -63,6 +63,7 @@ enum program_status {
 	status_could_not_open_metadata_output_file,
 	status_could_not_write_bitmap_file,
 	status_could_not_write_metadata_file,
+	status_could_not_get_a_bitmap_for_each_character,
 	n_status
 };
 
@@ -96,6 +97,10 @@ char const * __restrict const status_messages[n_status] = {
 		"Failed to write the whole bitmap file\n",
 	[status_could_not_write_metadata_file] =
 		"Failed to write the whole metadata file\n",
+	[status_could_not_get_a_bitmap_for_each_character] =
+		"Failed to load a bitmap for each character.\n"
+		"Try to provide more fonts\n"
+		"or at least one font with a default (0) character.\n"
 };
 
 struct point_i16 {
@@ -110,7 +115,13 @@ struct bitmap_metadata {
 	uint8_t * data_address;
 	uint32_t index;
 };
+myy_vector_template(bitmap_metadata, struct bitmap_metadata)
+myy_vector_template(glyph_metadata, struct myy_packed_fonts_glyphdata)
+myy_vector_template(u8, uint8_t)
+myy_vector_template(u32, uint32_t)
+myy_vector_template(ft_face, FT_Face)
 
+#if !defined(NDEBUG)
 static inline void print_pixel(uint_fast8_t pixel_value)
 {
 	struct {
@@ -126,15 +137,18 @@ static inline void print_pixel(uint_fast8_t pixel_value)
 	uint_fast8_t index = (pixel_value + 1) / 64;
 	write(fileno(stdout), states[index].codepoints, states[index].size);
 }
+#else
+#define print_pixel(pixel_value) 0
+#endif
 
 static bool load_char(FT_Face face, uint32_t utf32_code)
 {
 	if (FT_Get_Char_Index(face, utf32_code) == 0)
-		printf("%u not found\n", utf32_code);
+		LOG("%u not found\n", utf32_code);
 
 	int error = FT_Load_Char(face, utf32_code, FT_LOAD_DEFAULT);
 	if (error != 0) {
-		fprintf(stderr, "Could not get character %c : 0x%02x\n",
+		LOG("Could not get character %c : 0x%02x\n",
 			(uint8_t) utf32_code, error);
 		goto could_not_load_character;
 	}
@@ -144,7 +158,7 @@ static bool load_char(FT_Face face, uint32_t utf32_code)
 	error = FT_Render_Glyph(glyph_slot, FT_RENDER_MODE_NORMAL);
 
 	if (error != 0) {
-		fprintf(stderr, "Could not render character %c : 0x%02x\n",
+		LOG("Could not render character %c : 0x%02x\n",
 			(uint8_t) utf32_code, error);
 		goto could_not_render_glyph;
 	}
@@ -157,10 +171,10 @@ could_not_load_character:
 
 bool copy_char(
 	FT_Face const face,
-	uint32_t max_height,
-	myy_vector_t * __restrict const bitmaps,
-	myy_vector_t * __restrict const bitmaps_metadata,
-	myy_vector_t * __restrict const glyphs_metadata)
+	int32_t max_height,
+	myy_vector_u8 * __restrict const bitmaps,
+	myy_vector_bitmap_metadata * __restrict const bitmaps_metadata,
+	myy_vector_glyph_metadata * __restrict const glyphs_metadata)
 {
 	bool ret = false;
 	FT_GlyphSlot const glyph   = face->glyph;
@@ -191,67 +205,86 @@ bool copy_char(
 		.stride = bitmap.pitch,
 		.size   = bitmap.rows * bitmap.pitch,
 		.index  =
-			myy_vector_last_offset(bitmaps_metadata) /
-			sizeof(struct bitmap_metadata)
+			myy_vector_bitmap_metadata_length(bitmaps_metadata)
 	};
 
-	ret = myy_vector_add(bitmaps_metadata,
-		sizeof(metadata),
-		(uint8_t const * __restrict) &metadata);
+	ret = 
+		myy_vector_bitmap_metadata_add(bitmaps_metadata, 1, &metadata);
 
 	if (!ret) {
-		fprintf(stderr, "Could not add metadata\n");
+		LOG("Could not add metadata\n");
 		goto could_not_add_the_bitmap_metadata;
 	}
 
-	ret = myy_vector_add(glyphs_metadata,
-		sizeof(glyph_metadata),
-		(uint8_t const * __restrict) &glyph_metadata);
+	ret = myy_vector_glyph_metadata_add(glyphs_metadata,
+		1, &glyph_metadata);
 	if (!ret) {
-		fprintf(stderr, "Could not add the glyph metadata\n");
+		LOG("Could not add the glyph metadata\n");
 		goto could_not_add_the_glyph_metadata;
 	}
 
-	ret = myy_vector_add(bitmaps, metadata.size,
+	ret = myy_vector_u8_add(bitmaps, metadata.size,
 		bitmap.buffer);
 	if (!ret) {
-		fprintf(stderr, "Could not generate the bitmap\n");
+		LOG("Could not generate the bitmap\n");
 		goto could_not_add_the_bitmap;
 	}
 
-	return ret;
+	return true;
 
 could_not_add_the_bitmap:
-	myy_vector_move_tail_back(glyphs_metadata, sizeof(glyph_metadata));
+	myy_vector_glyph_metadata_forget_last(glyphs_metadata, 1);
 could_not_add_the_glyph_metadata:
-	myy_vector_move_tail_back(bitmaps_metadata, sizeof(metadata));
+	myy_vector_bitmap_metadata_forget_last(bitmaps_metadata, 1);
 could_not_add_the_bitmap_metadata:
 	return ret;
 }
 
 static FT_Face first_face_that_can_display(
-	myy_vector_t const * __restrict const faces,
+	myy_vector_ft_face const * __restrict const faces,
 	uint32_t codepoint)
 {
 	myy_vector_for_each(faces, FT_Face, face, {
-		printf("Searching %u in %s... ", codepoint, face->family_name);
+		LOG("Searching %u in %s... ", codepoint, face->family_name);
 		if (FT_Get_Char_Index(face, codepoint)) {
-			printf("OK !\n");
+			LOG("OK !\n");
 			return face;
 		}
-		printf("Nope.\n", codepoint);
+		LOG("Nope.\n");
 	});
-	printf("No provided font can display : %u\n",
+	LOG("No provided font can display : %u\n",
 		codepoint);
 	return NULL;
 }
 
+bool copy_default_char(
+	myy_vector_ft_face const * __restrict const faces,
+	int32_t max_height,
+	myy_vector_u8 * __restrict const bitmaps,
+	myy_vector_bitmap_metadata * __restrict const bitmaps_metadata,
+	myy_vector_glyph_metadata * __restrict const glyphs_metadata)
+{
+	bool ret = false;
+	/* 0 is the default character on some font.
+	 * However, not every font has such character
+	 */
+	FT_Face face = first_face_that_can_display(faces, 0);
+	if (face != NULL && load_char(face, 0)) {
+		ret = copy_char(
+			face,
+			max_height,
+			bitmaps, bitmaps_metadata,
+			glyphs_metadata);
+	}
+	return ret;
+}
+
 static void add_addresses_of_each_bitmap(
-	myy_vector_t const * __restrict const bitmaps_metadata,
-	myy_vector_t const * __restrict const bitmaps)
+	myy_vector_bitmap_metadata const * __restrict const bitmaps_metadata,
+	myy_vector_u8 * __restrict const bitmaps)
 {
 	uint8_t * __restrict cursor =
-		myy_vector_data(bitmaps);
+		myy_vector_u8_data(bitmaps);
 
 	int i = 0;
 	myy_vector_for_each_ptr(
@@ -262,11 +295,11 @@ static void add_addresses_of_each_bitmap(
 			i++;
 		}
 	);
-	printf("%d bitmaps\n", i);
+	LOG("%d bitmaps\n", i);
 }
 
 uint32_t max_height_of_all_faces(
-	myy_vector_t const * __restrict const faces)
+	myy_vector_ft_face const * __restrict const faces)
 {
 	uint32_t max_height = 0;
 	myy_vector_for_each(faces, FT_Face, face, {
@@ -276,21 +309,51 @@ uint32_t max_height_of_all_faces(
 	return max_height;
 }
 
-void compute_each_bitmap_individually(
-	myy_vector_t const * __restrict const faces,
-	myy_vector_t const * __restrict const codepoints,
-	myy_vector_t * __restrict const bitmaps,
-	myy_vector_t * __restrict const bitmaps_metadata,
-	myy_vector_t * __restrict const glyph_metadata)
+bool compute_each_bitmap_individually(
+	myy_vector_ft_face const * __restrict const faces,
+	myy_vector_u32 const * __restrict const codepoints,
+	myy_vector_u8 * __restrict const bitmaps,
+	myy_vector_bitmap_metadata * __restrict const bitmaps_metadata,
+	myy_vector_glyph_metadata * __restrict const glyph_metadata)
 {
 	uint32_t const max_height =
 		max_height_of_all_faces(faces);
-	uint32_t const advance_y = -max_height;
+	int32_t const advance_y = -max_height;
+	bool ret = false;
 	myy_vector_for_each(codepoints, uint32_t, codepoint, {
 		FT_Face face =
 			first_face_that_can_display(faces, codepoint);
-		if (face != NULL && load_char(face, codepoint))
-			copy_char(face, -max_height, bitmaps, bitmaps_metadata, glyph_metadata);
+		if (face != NULL && load_char(face, codepoint)) {
+			ret = copy_char(
+				face,
+				advance_y,
+				bitmaps, bitmaps_metadata,
+				glyph_metadata);
+			if (!ret) {
+				printf(
+					"  Something went wrong when copying glyph for codepoint %u\n"
+					"using the font %s\n",
+					codepoint,
+					face->family_name != NULL ? face->family_name : "<No name>");
+				goto could_not_copy_character;
+			}
+		}
+		else {
+			printf(
+				"Trying to load a default character for codepoint %u\n",
+				codepoint);
+			ret = copy_default_char(
+				faces,
+				advance_y,
+				bitmaps, bitmaps_metadata,
+				glyph_metadata);
+			if (!ret) {
+				printf(
+					"  Could not load a default character for codepoint %u\n",
+					codepoint);
+				goto could_not_load_default_character;
+			}
+		}
 	});
 	/* Since the bitmaps have flexible sizes and the
 	 * vector used to store them can expand when adding
@@ -305,6 +368,11 @@ void compute_each_bitmap_individually(
 	 *   Advance the cursor by metadata.size octets
 	 */
 	add_addresses_of_each_bitmap(bitmaps_metadata, bitmaps);
+
+	return ret;
+could_not_copy_character:
+could_not_load_default_character:
+	return ret;
 }
 
 struct global_statistics {
@@ -313,7 +381,7 @@ struct global_statistics {
 };
 
 struct global_statistics bitmaps_statistics(
-	myy_vector_t const * __restrict const bitmaps_metadata)
+	myy_vector_bitmap_metadata const * __restrict const bitmaps_metadata)
 {
 	struct global_statistics stats = {0, 0};
 
@@ -330,10 +398,9 @@ struct global_statistics bitmaps_statistics(
 }
 
 void print_bitmaps(
-	myy_vector_t const * __restrict const bitmaps_metadata)
+	myy_vector_bitmap_metadata const * __restrict const bitmaps_metadata)
 {
 
-	printf("Miaou");
 	size_t total_height = 0;
 	size_t max_width    = 0;
 
@@ -350,21 +417,21 @@ void print_bitmaps(
 				: metadata.width;
 
 			/* Print the pixels */
-			printf("\n");
+			LOG("\n");
 			for (uint16_t h = 0; h < metadata.height; h++)
 			{
 				for (uint16_t w = 0; w < metadata.width; w++)
 				{
 					print_pixel(pixels[w]);
 				}
-				printf("\n");
+				LOG("\n");
 				pixels += metadata.stride;
 			}
-			printf("\n");
+			LOG("\n");
 		}
 	);
 
-	printf(
+	LOG(
 		"Total height : %lu\n"
 		"Max width    : %lu\n",
 		total_height, max_width);
@@ -382,13 +449,13 @@ uint_fast8_t fh_file_exist(char const * __restrict const filepath)
 
 static void print_usage(char const * __restrict const program_name)
 {
-	printf(
+	fprintf(stderr, 
 		"Usage : %s /path/to/font/file.ttf [/path/to/other/font.otf, ...] /path/to/chars.txt\n",
 		program_name);
 }
 
 static bool chars_to_codepoints(
-	myy_vector_t * __restrict const codepoints,
+	myy_vector_u32 * __restrict const codepoints,
 	uint8_t const * __restrict const utf8_chars,
 	size_t const utf8_chars_size)
 {
@@ -401,9 +468,7 @@ static bool chars_to_codepoints(
 		struct utf8_codepoint codepoint =
 			utf8_codepoint_and_size(cursor);
 
-		bool added = myy_vector_add(
-			codepoints, sizeof(uint32_t),
-			(uint8_t const * __restrict) &codepoint.raw);
+		bool added = myy_vector_u32_add(codepoints, 1, &codepoint.raw);
 
 		if (!added) break;
 
@@ -423,15 +488,14 @@ static int compare_codepoints(void const * pa, void const * pb)
 }
 
 static void uniq(
-	myy_vector_t * __restrict const codepoints_data)
+	myy_vector_u32 * __restrict const codepoints_data)
 {
-	size_t vector_size =
-		myy_vector_last_offset(codepoints_data)/sizeof(uint32_t);
+	size_t vector_size = myy_vector_u32_length(codepoints_data);
 
 	uint32_t * const sorted_codepoints =
-		(uint32_t *) codepoints_data->begin;
+		myy_vector_u32_data(codepoints_data);
 	uint32_t const * const codepoints =
-		(uint32_t const *) codepoints_data->begin;
+		myy_vector_u32_data(codepoints_data);
 
 	uint32_t uniques = 1;
 
@@ -447,7 +511,7 @@ static void uniq(
 }
 
 static bool load_codepoints_from_chars_file(
-	myy_vector_t * __restrict const codepoints,
+	myy_vector_u32 * __restrict const codepoints,
 	char const * __restrict const chars_filepath)
 {
 	bool ret = false;
@@ -469,14 +533,14 @@ static bool load_codepoints_from_chars_file(
 	if (!ret)
 		goto could_not_convert_all_codepoints;
 
-	qsort(myy_vector_data(codepoints),
-		myy_vector_last_offset(codepoints)/sizeof(uint32_t),
+	qsort(myy_vector_u32_data(codepoints),
+		myy_vector_u32_length(codepoints),
 		sizeof(uint32_t),
 		compare_codepoints);
 
 	uniq(codepoints);
 
-	printf("%lu\n", myy_vector_last_offset(codepoints)/sizeof(uint32_t));
+	LOG("%lu\n", myy_vector_u32_length(codepoints));
 could_not_convert_all_codepoints:
 cannot_map_file:
 cannot_open_chars:
@@ -485,27 +549,23 @@ cannot_open_chars:
 
 static bool fonts_deinit(
 	FT_Library * library,
-	myy_vector_t * __restrict const faces)
+	myy_vector_ft_face * __restrict const faces)
 {
-	printf("In\n");
 	myy_vector_for_each(faces, FT_Face, face_to_delete, {
 		FT_Done_Face(face_to_delete);
 	});
-	printf("Between\n");
 	FT_Done_FreeType(*library);
-	printf("Out\n");
 }
 
 static bool fonts_init(
 	FT_Library * library,
 	char const * __restrict const * __restrict const fonts_filepath,
 	uint32_t n_fonts,
-	myy_vector_t * __restrict const faces)
+	myy_vector_ft_face * __restrict const faces)
 {
 
 	if (FT_Init_FreeType( library ) != 0)
 		goto ft_init_failed;
-
 
 	for (uint32_t i = 0; i < n_fonts; i++) {
 		FT_Face face;
@@ -515,9 +575,9 @@ static bool fonts_init(
 		/* Add the face one initialized, so that we can free it
 		 * ASAP if we fail afterwards
 		 */
-		myy_vector_add(faces, sizeof(faces), (uint8_t *) &face);
+		myy_vector_ft_face_add(faces, 1, &face);
 
-		if (FT_Set_Char_Size(face, 16*64, 0, 96, 0) != 0)
+		if (FT_Set_Char_Size(face, 14*64, 0, 96, 0) != 0)
 			goto could_not_set_char_size_on_all_fonts;
 
 	}
@@ -540,12 +600,11 @@ static int compare_bitmaps_by_width(void const * pa, void const * pb)
 }
 
 static void sort_bitmaps_metadata_by_width(
-	myy_vector_t * __restrict const metadata)
+	myy_vector_bitmap_metadata * __restrict const metadata)
 {
-	qsort(myy_vector_data(metadata),
-		myy_vector_last_offset(metadata)
-		/ sizeof(struct bitmap_metadata),
-		sizeof(struct bitmap_metadata),
+	qsort(myy_vector_bitmap_metadata_data(metadata),
+		myy_vector_bitmap_metadata_length(metadata),
+		myy_vector_bitmap_metadata_type_size(),
 		compare_bitmaps_by_width);
 }
 
@@ -648,14 +707,14 @@ out:
 }
 
 static void normalize_coordinates(
-	myy_vector_t * __restrict const glyphsdata,
+	myy_vector_glyph_metadata * __restrict const glyphs_metadata,
 	uint_fast32_t texture_width,
 	uint_fast32_t texture_height)
 {
-	myy_vector_for_each_ptr(glyphsdata,
-		struct myy_packed_fonts_glyphdata, glyph_data,
+	myy_vector_for_each_ptr(glyphs_metadata,
+		struct myy_packed_fonts_glyphdata, glyph_meta,
 		{
-			normalize_tex_coordinates(glyph_data,
+			normalize_tex_coordinates(glyph_meta,
 				texture_width,
 				texture_height);
 		}
@@ -699,16 +758,15 @@ could_not_write_header:
 }
 
 static bool generate_bitmap(
-	myy_vector_t * __restrict const bitmaps_metadata,
+	myy_vector_bitmap_metadata * __restrict const bitmaps_metadata,
 	uint8_t * __restrict texture,
 	uint32_t const total_height,
 	uint32_t const max_height,
-	myy_vector_t * __restrict const glyphs_vector,
+	myy_vector_glyph_metadata * __restrict const glyphs_vector,
 	int output_fd)
 {
 	struct myy_packed_fonts_glyphdata * __restrict const glyph_gldata =
-		(struct myy_packed_fonts_glyphdata * __restrict)
-		myy_vector_data(glyphs_vector);
+		myy_vector_glyph_metadata_data(glyphs_vector);
 	uint32_t const padding = 1;
 	uint32_t const sides_padding = padding * 2;
 
@@ -745,6 +803,10 @@ static bool generate_bitmap(
 			if (added_width < total_width)
 			{
 				blit(texture, total_width, metadata);
+				printf("Tex:\n%d ←→ %d\n%d ↑↓ %d\n",
+					current_line_width + 1,
+					current_line_width + metadata.width,
+					h, h+metadata.height-1);
 				current_glyph->tex_left   = 1 + current_line_width;
 				current_glyph->tex_right  =
 					1 + current_line_width + metadata.width;
@@ -780,18 +842,18 @@ static bool generate_bitmap(
 	 */
 	uint_fast32_t const power_of_2_h = ceil_to_power_of_2(h);
 
-	normalize_coordinates(glyphs_vector, total_width, power_of_2_h);
+	//normalize_coordinates(glyphs_vector, total_width, power_of_2_h);
 	uint32_t const n_pixels = h * total_width;
 	uint16_t const mask = total_width - 1;
 	for (uint_fast32_t p = 0; p < n_pixels; p++)
 	{
-		if ((p & mask) == mask) printf("\n");
+		if ((p & mask) == mask) LOG("\n");
 		print_pixel(texture_start[p]);
 	}
 
-	printf("Written !\n");
+	LOG("Written !\n");
 
-	printf("total_width : %u\ntotal_height : %lu (%u)\n",
+	LOG("total_width : %u\ntotal_height : %lu (%u)\n",
 		total_width,
 		power_of_2_h,
 		h);
@@ -808,13 +870,13 @@ static bool generate_bitmap(
 bool generate_metadata_file(
 	int output_file_fd,
 	char const * __restrict const texture_filename,
-	myy_vector_t const * __restrict const codepoints,
-	myy_vector_t const * __restrict const glyphs)
+	myy_vector_u32 * __restrict const codepoints,
+	myy_vector_glyph_metadata * __restrict const glyphs)
 {
 
 	uint16_t const padding[16] = {0};
 	uint32_t const texture_filename_size = strlen(texture_filename);
-	fprintf(stderr, "texture_filename_size : %d\n", texture_filename_size);
+	LOG("texture_filename_size : %d\n", texture_filename_size);
 	struct myy_packed_fonts_textures_filename filename = {
 		.size = texture_filename_size,
 	};
@@ -830,14 +892,14 @@ bool generate_metadata_file(
 	struct myy_packed_fonts_info_header header = {
 		.signature = MYYF_SIGNATURE,
 		.n_stored_codepoints =
-			myy_vector_last_offset(codepoints)/sizeof(uint32_t),
+			myy_vector_u32_length(codepoints),
 		.codepoints_start_offset  = 0,
 		.glyphdata_start_offset   = 0,
 		.texture_filenames_offset = 0,
 		.unused = {0,0}
 	};
 
-	fprintf(stderr, "Writing the header\n");
+	LOG("Writing the header\n");
 	/* Write the dummy header */
 	uint32_t offset = 0;
 	int written = write(output_file_fd, &header, sizeof(header));
@@ -901,24 +963,24 @@ bool generate_metadata_file(
 			bail_out);
 		offset += written;
 	}
-	fprintf(stderr, "Filenames written\n");
+	LOG("Filenames written\n");
 	header.codepoints_start_offset = offset;
 
 	/* Write the codepoints section */
 	{
 		/* filename.size is rounded to 8 to avoid unaligned accesses */
 		size_t const codepoints_size =
-			myy_vector_last_offset(codepoints);
+			myy_vector_u32_allocated_used(codepoints);
 		size_t codepoints_padding;
 
 		write_or_bailout(written,
 			output_file_fd,
-			myy_vector_data(codepoints),
+			myy_vector_u32_data(codepoints),
 			codepoints_size,
 			bail_out);
 		offset += written;
 
-		fprintf(stderr, "Written the codepoints\n");
+		LOG("Written the codepoints\n");
 
 		codepoints_padding =
 			ALIGN_ON_POW2(offset, 16) - offset;
@@ -929,18 +991,18 @@ bool generate_metadata_file(
 			bail_out);
 		offset += written;
 	}
-	fprintf(stderr, "Codepoints written\n");
+	LOG("Codepoints written\n");
 	header.glyphdata_start_offset = offset;
 
 	/* Write the glyphs metadata section */
 	{
 		size_t const glyphs_size =
-			myy_vector_last_offset(glyphs);
+			myy_vector_glyph_metadata_allocated_used(glyphs);
 		size_t glyphs_padding;
 
 		write_or_bailout(written,
 			output_file_fd,
-			myy_vector_data(glyphs),
+			myy_vector_glyph_metadata_data(glyphs),
 			glyphs_size,
 			bail_out);
 		offset += written;
@@ -997,17 +1059,17 @@ int main(int const argc, char const * const * const argv)
 
 	bool bool_ret;
 	FT_Library library;
-	myy_vector_t faces = myy_vector_init(sizeof(FT_Face)*16);
-	myy_vector_t bitmaps_metadata =
-		myy_vector_init(1024*sizeof(struct bitmap_metadata));
-	myy_vector_t glyph_metadata =
-		myy_vector_init(1024*sizeof(struct myy_packed_fonts_glyphdata));
-	myy_vector_t bitmaps =
-		myy_vector_init(1024*BITMAP_AVERAGE_SIZE);
-	myy_vector_t codepoints =
-		myy_vector_init(4*1024*1024);
+	myy_vector_ft_face faces = myy_vector_ft_face_init(16);
+	myy_vector_bitmap_metadata bitmaps_metadata =
+		myy_vector_bitmap_metadata_init(1024);
+	myy_vector_glyph_metadata glyph_metadata =
+		myy_vector_glyph_metadata_init(1024);
+	myy_vector_u8 bitmaps =
+		myy_vector_u8_init(1024*BITMAP_AVERAGE_SIZE);
+	myy_vector_u32 codepoints = myy_vector_u32_init(1024*1024);
 	/* The texture isn't supposed to expand endlessly.
 	 * The maximum authorized size is 4Kx4K.
+	 * Some OpenGL ES implementations only support 2Kx2K
 	 * After that, you'll need another one.
 	 */
 	uint8_t * __restrict texture =
@@ -1016,29 +1078,32 @@ int main(int const argc, char const * const * const argv)
 	char const * __restrict const bitmap_filename =
 		"fonts_bitmap.myyraw";
 
-	if (!myy_vector_is_valid(&faces))
+	if (!myy_vector_ft_face_is_valid(&faces))
 	{
 		ret = status_not_enough_initial_memory_for_faces;
 		goto not_enough_initial_memory_for_faces;
 	}
-	if (!myy_vector_is_valid(&bitmaps_metadata)) 
+
+	if (!myy_vector_bitmap_metadata_is_valid(&bitmaps_metadata)) 
 	{
 		ret = status_not_enough_initial_memory_for_bitmaps_metadata;
 		goto not_enough_initial_memory_for_bitmaps_metadata;
 	}
-	if (!myy_vector_is_valid(&glyph_metadata))
+
+	if (!myy_vector_glyph_metadata_is_valid(&glyph_metadata))
 	{
 		// TODO : Change
 		ret = status_not_enough_initial_memory_for_bitmaps_metadata;
 		goto not_enough_initial_memory_for_glyph_metadata;
 	}
-	if (!myy_vector_is_valid(&bitmaps))
+
+	if (!myy_vector_u8_is_valid(&bitmaps))
 	{
 		ret = status_not_enough_initial_memory_for_bitmaps;
 		goto not_enough_initial_memory_for_bitmaps;
 	}
 
-	if (!myy_vector_is_valid(&codepoints))
+	if (!myy_vector_u32_is_valid(&codepoints))
 	{
 		ret = status_not_enough_initial_memory_for_codepoints;
 		goto not_enough_initial_memory_for_codepoints;
@@ -1059,11 +1124,11 @@ int main(int const argc, char const * const * const argv)
 		printf("\t%s\n", fonts_filepath[i]);
 	}
 
-	printf("Chars filepath : %s\n", chars_filepath);
+	LOG("Chars filepath : %s\n", chars_filepath);
 
 	for (uint_fast32_t i = 0; i < n_fonts; i++) {
 		if (!fh_file_exist(fonts_filepath[i])) {
-			fprintf(stderr, "%s not_found\n", fonts_filepath[i]);
+			LOG("%s not_found\n", fonts_filepath[i]);
 			ret = status_font_filepath_does_not_exist;
 			goto font_filepath_does_not_exist;
 		}
@@ -1111,8 +1176,13 @@ int main(int const argc, char const * const * const argv)
 	 * TODO Freetype actually provide facilities to copy bitmap.
 	 *      Investigate this. This could ease our work tenfold.
 	 */
-	compute_each_bitmap_individually(
+	bool_ret = compute_each_bitmap_individually(
 		&faces, &codepoints, &bitmaps, &bitmaps_metadata, &glyph_metadata);
+	if (!bool_ret)
+	{
+		ret = status_could_not_get_a_bitmap_for_each_character;
+		goto could_not_get_a_bitmap_for_each_character;
+	}
 	//print_bitmaps(&bitmaps_metadata);
 
 	/* Sort the bitmaps by width, in order to align them afterwards.
@@ -1156,6 +1226,7 @@ int main(int const argc, char const * const * const argv)
 
 could_not_write_metadata_file:
 could_not_write_bitmap_file:
+could_not_get_a_bitmap_for_each_character:
 could_not_initialize_fonts:
 could_not_load_codepoints_from_file:
 	close(output_metadata_fd);
@@ -1165,16 +1236,16 @@ could_not_open_bitmap_output_file:
 chars_filepath_does_not_exist:
 font_filepath_does_not_exist:
 not_enough_arguments:
-	myy_vector_free_content(codepoints);
+	myy_vector_u32_free_content(codepoints);
 not_enough_initial_memory_for_codepoints:
-	myy_vector_free_content(bitmaps);
+	myy_vector_u8_free_content(bitmaps);
 not_enough_initial_memory_for_bitmaps:
-	myy_vector_free_content(glyph_metadata);
+	myy_vector_glyph_metadata_free_content(glyph_metadata);
 not_enough_initial_memory_for_glyph_metadata:
-	myy_vector_free_content(bitmaps_metadata);
+	myy_vector_bitmap_metadata_free_content(bitmaps_metadata);
 not_enough_initial_memory_for_bitmaps_metadata:
-	myy_vector_free_content(faces);
+	myy_vector_ft_face_free_content(faces);
 not_enough_initial_memory_for_faces:
-	fprintf(stderr, "%s", status_messages[ret]);
+	LOG("%s", status_messages[ret]);
 	return ret;
 }

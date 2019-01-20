@@ -11,4 +11,6 @@
 *.save
 .build
 build
+*.swp
+*.kate-swp
 

@@ -1,5 +1,7 @@
 require 'fileutils'
 
+$debug = false
+
 def align_on_pow2(value, pow2)
 	pmask = pow2 - 1
 	return (value + (pmask)) & (~pmask)
@@ -88,14 +90,14 @@ def section_change(status, line)
 	valid_section = false
 	if (/^\s*\[(?<title>[^\]]+)\]\s*/ =~ line)
 		section = title.strip.downcase.to_sym
-		puts ("section : #{section}")
+		dlog ("section : #{section}")
 		valid_section = SECTIONS.include?(section)
 		if valid_section
 			status[:section] = section
-			puts "Parsing section #{section}"
+			dlog "Parsing section #{section}"
 		else
 			status[:section] = :not_in_a_section
-			puts "#{title} is invalid\nBack to no section"
+			dlog "#{title} is invalid\nBack to no section"
 		end
 	end
 	valid_section
@@ -133,6 +135,10 @@ def shader_file_type(shader_filename)
 	SHADER_FILE_TYPES[extension]
 end
 
+def dlog(text)
+	dlog(text) if $debug
+end
+
 MetadataHeader = Struct.new(:signature, :data_offset, :metadata_offset, :n_programs, :programs)
 Program = Struct.new(:name_offset, :metadata_offset)
 
@@ -165,7 +171,7 @@ def generate_cfile(filepath)
 	$c_header << "\n"
 	$c_header << $big_program_structure
 	$c_header << "\n#endif"
-	puts $c_header
+	dlog $c_header
 	File.write(filepath, $c_header)
 end
 
@@ -207,12 +213,12 @@ end
 def parse_program_line(status, line)
 	if (/^(?<program_name>\w+):/ =~ line.strip)
 
-		puts "\tProgram name : #{program_name}"
+		dlog "\tProgram name : #{program_name}"
 		program_name_delimiter = ':'
 		the_rest_start_at = line.index(program_name_delimiter)+1
 		shader_filenames = line[the_rest_start_at..-1].split(',').map(&:strip).map(&:downcase)
-		puts "\t#{line[the_rest_start_at..-1]}"
-		puts "\tShader filenames : #{shader_filenames}"
+		dlog "\t#{line[the_rest_start_at..-1]}"
+		dlog "\tShader filenames : #{shader_filenames}"
 
 		# Failure will just make the whole program terminates.
 		# If the program terminates,
@@ -243,7 +249,7 @@ def parse_program_line(status, line)
 			|shader_filename|
 			shaders_mdata.n_shaders += 1
 
-			puts "Parsing #{shader_filename}"
+			dlog "Parsing #{shader_filename}"
 
 			shader_attributes = []
 			shader_uniforms   = []
@@ -263,8 +269,8 @@ def parse_program_line(status, line)
 				id   = attribute[:id]
 				attributes_enum << "\t#{program_name}_#{name} = #{id},\n"
 
-				p attribute
-				p id
+				dlog attribute
+				dlog id
 				attributes << Attribute.new($data_section.length, id)
 				$data_section << name
 				$data_section << "\u0000"
@@ -277,7 +283,7 @@ def parse_program_line(status, line)
 
 				uniforms << Uniform.new(uniforms_offset, $data_section.length)
 				uniforms_offset += 4
-				p uniform
+				dlog uniform
 				$data_section << uniform
 				$data_section << "\u0000"
 				uniforms_mdata.n_uniforms += 1
@@ -320,7 +326,7 @@ def parse_program_line(status, line)
 		packed_attributes_mdata = ""
 		attributes.each do
 			|attribute|
-			p [attribute[:name_offset], attribute[:bind_id]]
+			dlog [attribute[:name_offset], attribute[:bind_id]]
 			packed_attributes_mdata << [attribute[:name_offset], attribute[:bind_id]].pack("I<*")
 		end
 		dummy_attributes_section_header =
@@ -374,6 +380,7 @@ SECTION_METHODS = {
 abort("./program.rb /path/to/metadata.ini") if (ARGV.length != 1)
 
 config_file_path = ARGV[0]
+$debug = ARGV[1]
 
 abort("#{config_file_path} does not exist") unless File.exist?(config_file_path)
 

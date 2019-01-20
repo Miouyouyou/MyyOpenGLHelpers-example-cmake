@@ -9,14 +9,23 @@
 
 #include "bmp.h"
 
+#include <myy/helpers/opengl/loaders.h>
+#include <myy/helpers/memory.h>
+#include <myy/helpers/file.h>
+
 // http://graphics.stanford.edu/~seander/bithacks.html#ZerosOnRightMultLookup
 static uint32_t n_zeroes_right(uint32_t v)
 {
-	/* Myy : I'm not sure that putting this into some static address,
+	/* Myy : The original version defined the array as "static"
+	 * I'm not sure that putting this into some static address,
 	 * instead of putting this in the heap, is "that" faster.
 	 * You'll still get a cache miss on the first time, while you'll
 	 * rarely do with the stack.
+	 * 
+	 * That's why I'm defining it like this. But without looking
+	 * at the generated code, these are just random thoughts.
 	 */
+	/* Note : I still find this hack insane */
 	uint8_t const MultiplyDeBruijnBitPosition[32] = 
 	{
 		0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8, 
@@ -36,17 +45,23 @@ static inline uint_fast32_t convert_channel(
 	uint_fast32_t const new_channel_max,
 	uint_fast32_t const old_channel_max)
 {
+	/* Since integer division truncates, better do the
+	 * multiplication first
+	 */
 	return channel_value * new_channel_max / old_channel_max;
 }
 
+#define TARGET_PIXEL (1024*32+33)
+
 static void write_input_to_565(
-	int const in_fd, int const out_fd,
+	uint8_t const * __restrict cursor, uint16_t * __restrict out,
 	uint_fast8_t const input_bpp,
 	uint_fast32_t input_size,
 	uint32_t const red_mask, uint32_t const green_mask,
 	uint32_t const blue_mask)
 {
 
+	uint8_t const * __restrict const input_end = cursor + input_size;
 	uint_fast8_t const red_shift   = n_zeroes_right(red_mask);
 	uint_fast8_t const green_shift = n_zeroes_right(green_mask);
 	uint_fast8_t const blue_shift  = n_zeroes_right(blue_mask);
@@ -55,22 +70,38 @@ static void write_input_to_565(
 	uint_fast8_t const out_green_shift = 5;
 	uint_fast8_t const out_blue_shift  = 0;
 
-	uint32_t const n_bytes_per_read = input_bpp / 8;
 	uint32_t pixel;
+	uint_fast32_t const n_bytes_per_pixel = input_bpp / 8;
 	uint_fast8_t r, g, b;
 
-	while(input_size) {
+	uint_fast32_t n = 0;
+	while(cursor < input_end) {
 		/* Input */
-		int const read_bytes =
-			read(in_fd, &pixel, n_bytes_per_read);
-		if (read_bytes < n_bytes_per_read)
-			goto err;
+		pixel = 0;
+		for (uint_fast32_t i = 0; i < n_bytes_per_pixel; i++) {
+			uint32_t const value = (cursor[i] << (i << 3));
+			if (n == TARGET_PIXEL)
+				printf("cursor[%lu] = %02x << %lu << 3 = %08x\n",
+					i, cursor[i], i, value);
+			pixel |= value;
+		}
+		cursor += n_bytes_per_pixel;
 
 		r = (pixel &   red_mask) >>   red_shift;
 		g = (pixel & green_mask) >> green_shift;
 		b = (pixel &  blue_mask) >>  blue_shift;
-		if (input_size <= n_bytes_per_read)
-			printf("rgb : %u,%u,%u\n", r, g, b);
+
+		if (n == TARGET_PIXEL)
+			printf(
+				"pixel : %08x\n"
+				"rgb : \n"
+				"\tr: %08x & %08x >> %hhu -> %02x\n"
+				"\tg: %08x & %08x >> %hhu -> %02x\n"
+				"\tb: %08x & %08x >> %hhu -> %02x\n",
+				pixel,
+				pixel, red_mask, red_shift, r,
+				pixel, green_mask, green_shift, g,
+				pixel, blue_mask, blue_shift, b);
 
 		/* Output */
 		r = convert_channel(
@@ -86,22 +117,16 @@ static void write_input_to_565(
 			31,
 			(blue_mask >> blue_shift));
 
-		if (input_size <= n_bytes_per_read)
+		if (n == TARGET_PIXEL)
 			printf("rgb_out : %u,%u,%u\n", r, g, b);
 		pixel = (
 			  (r <<   out_red_shift)
 			| (g << out_green_shift)
 			| (b <<  out_blue_shift));
 
-		/* Little-Endian magic */
-		write(out_fd, &pixel, 2);
-		
-			
-		input_size -= n_bytes_per_read;
+		*out++ = pixel;
+		n++;
 	}
-	return;
-
-err:
 	return;
 }
 
@@ -122,41 +147,62 @@ static void print_header(
 }
 
 static void convert_bitmap_to_565(
-	int const in_fd, int const out_fd)
+	uint8_t const * __restrict const input, int const out_fd)
 {
 	struct bitmap_common_header header;
 	struct bitmap_info_header_v5 metadata;
+	uint16_t * __restrict out_bitmap;
+	uint8_t const * __restrict cursor = input;
 
-	read(in_fd,
-		 (uint8_t * __restrict) &header,
-		 sizeof(header));
+	header = *((struct bitmap_common_header *) cursor);
 
 	print_header(&header);
 	if (header.complete_size <= BITMAP_V5_METADATA_SIZE) {
 		printf(
 			"File size inferior to a header...\n"
-			"Expected %u. Got %u\n",
+			"Expected %lu. Got %u\n",
 			BITMAP_V5_METADATA_SIZE, header.complete_size);
 		goto err;
 	}
 
-	read(in_fd, &metadata, sizeof(metadata));
+	cursor += sizeof(header);
+
+	metadata = *((struct bitmap_info_header_v5 *) cursor);
+
 	if (metadata.info_header_size
 	    != sizeof(struct bitmap_info_header_v5))
 	{
-		printf("Expected a header of size %u. Got %u\n",
+		printf("Expected a header of size %zu. Got %u\n",
 			sizeof(struct bitmap_info_header_v5),
 			metadata.info_header_size);
 		goto err;
 	}
 
+	cursor += sizeof(metadata);
+
+	struct myy_raw_texture_header myyraw_header = {
+		.signature = MYYT_SIGNATURE,
+		.width     = metadata.width,
+		.height    = metadata.height,
+		.gl_target = GL_TEXTURE_2D,
+		.gl_format = GL_RGB,
+		.gl_type   = GL_UNSIGNED_SHORT_5_6_5,
+		.alignment = 2,
+		.reserved  = 0
+	};
+
+	write(out_fd, &myyraw_header, sizeof(myyraw_header));
+	out_bitmap =
+		(uint16_t * __restrict)
+		allocate_temporary_memory(metadata.width * metadata.height * sizeof(uint16_t));
 	write_input_to_565(
-		in_fd, out_fd,
+		cursor, out_bitmap,
 		metadata.bpp,
 		metadata.data_size,
 		metadata.red_mask,
-		metadata.blue_mask,
-		metadata.green_mask);
+		metadata.green_mask,
+		metadata.blue_mask);
+	write(out_fd, out_bitmap, metadata.width * metadata.height * sizeof(uint16_t));
 	return;
 err:
 	return;
@@ -173,7 +219,7 @@ static void print_usage(
 		displayed_name, displayed_name);
 }
 
-void main(int argc, char **argv)
+int main(int argc, char **argv)
 {
 	if (argc < 3) {
 		print_usage(argv[0]);
@@ -182,27 +228,16 @@ void main(int argc, char **argv)
 	char const * __restrict const input_filepath  = argv[1];
 	char const * __restrict const output_filepath = argv[2];
 
-	int const in_fd = open(input_filepath, O_RDONLY);
-	if (in_fd < 0) return;
+	struct myy_fh_map_handle handle = fh_MapFileToMemory(input_filepath);
+	if (!handle.ok) return -1;
 
 	int const out_fd = open(output_filepath, O_WRONLY|O_CREAT, 00664);
-	if (out_fd < 0) return;
+	if (out_fd < 0) return out_fd;
 
-	convert_bitmap_to_565(in_fd, out_fd);
+	convert_bitmap_to_565(handle.address, out_fd);
 
 	close(out_fd);
-	close(in_fd);
+	fh_UnmapFileFromMemory(handle);
+
+	return 0;
 }
-
-/*
-	
-
-	char const * __restrict const file_format     = argv[3];
-
-
-
-
-
-	
-	close(output_filepath);
-*/
