@@ -3,7 +3,7 @@ cmake . &&
 cmake --build . &&
 cd .. &&
 
-./tools/font-packer /usr/share/fonts/noto/NotoSans-Regular.ttf /usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf shaders/chars.txt &&
+./tools/font-packer "data/Blogger Sans-Bold.otf" /usr/share/fonts/noto/NotoSans-Regular.ttf /usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf shaders/chars.txt &&
 mv font_pack_meta.dat data/ &&
 mv fonts_bitmap.myyraw textures/ &&
 

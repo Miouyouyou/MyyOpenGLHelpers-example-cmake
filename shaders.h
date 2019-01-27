@@ -11,6 +11,9 @@ enum myy_shader_text_attribs {
 	text_xy = 0,
 	text_in_st = 1,
 };
+enum myy_shader_simple_stencil_attribs {
+	simple_stencil_xy = 0,
+};
 
 struct {
 	GLuint standard_id;
@@ -20,8 +23,12 @@ struct {
 	GLuint text_id;
 	GLint  text_unif_projection;
 	GLint  text_unif_texture_projection;
+	GLint  text_unif_text_offset;
+	GLint  text_unif_global_offset;
 	GLint  text_unif_fonts_texture;
-	GLint  text_unif_niouik;
+	GLint  text_unif_rgb;
+	GLuint simple_stencil_id;
+	GLint  simple_stencil_unif_projection;
 } myy_programs;
 
 #endif
