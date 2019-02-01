@@ -10,6 +10,8 @@
 
 #include <myy/helpers/position.h>
 
+#include <menu_parts.h>
+
 #include <string.h>
 
 #include "shaders.h"
@@ -25,6 +27,238 @@ typedef void * gpu_buffer_offset_t;
 GLuint glbuffer_text;
 GLuint n_points_for_text;
 
+struct dimensions_S_ {
+	uint16_t width, height;
+};
+
+typedef struct dimensions_S_ dimensions_S;
+
+__attribute__((unused))
+static inline dimensions_S dimensions_S_struct(
+	uint16_t const width, uint16_t const height)
+{
+	dimensions_S dimensions = { .width = width, .height = height };
+	return dimensions;
+}
+
+struct rgba8 {
+	uint8_t r, g, b, a;
+};
+static inline struct rgba8 rgba8_color(
+	uint8_t const r, uint8_t const g, uint8_t const b, uint8_t const a)
+{
+	struct rgba8 color = { .r = r, .g = g, .b = b, .a = a };
+	return color;
+}
+
+struct simple_rgb_point {
+	position_S pos;
+	int16_t z, w;
+	struct rgba8 color;
+};
+myy_vector_template(rgb_points, struct simple_rgb_point)
+
+static inline struct simple_rgb_point simple_rgb_point_struct(
+	position_S const pos, int16_t depth,
+	struct rgba8 const color)
+{
+	struct simple_rgb_point const point = {
+		.pos   = pos,
+		.color = color,
+		.z     = depth,
+		.w     = 1
+	};
+
+	return point;
+}
+
+static inline void simple_rgb_triangle(
+	myy_vector_rgb_points * __restrict const points,
+	int16_t depth,
+	position_S const a, position_S const b, position_S const c,
+	struct rgba8 const color)
+{
+	struct simple_rgb_point triangle_vertices[3] = {
+		simple_rgb_point_struct(a, depth, color),
+		simple_rgb_point_struct(b, depth, color),
+		simple_rgb_point_struct(c, depth, color)
+	};
+	myy_vector_rgb_points_add(points, 3, triangle_vertices);
+}
+
+static inline void simple_rgb_quad(
+	myy_vector_rgb_points * __restrict const points,
+	int16_t const depth,
+	position_S const up_left, position_S const down_right,
+	struct rgba8 const color)
+{
+	position_S const down_left = {
+		.x = up_left.x,
+		.y = down_right.y
+	};
+	position_S const up_right = {
+		.x = down_right.x,
+		.y = up_left.y
+	};
+	struct simple_rgb_point two_triangles_quad_vertices[6] = {
+		simple_rgb_point_struct(up_left, depth, color),
+		simple_rgb_point_struct(down_left, depth, color),
+		simple_rgb_point_struct(up_right, depth, color),
+
+		simple_rgb_point_struct(down_right, depth, color),
+		simple_rgb_point_struct(up_right, depth, color),
+		simple_rgb_point_struct(down_left, depth, color)
+	};
+
+	myy_vector_rgb_points_add(points, 6, two_triangles_quad_vertices);
+}
+
+struct menu_forms {
+	GLuint n_points;
+	myy_vector_rgb_points cpu_buffer;
+	GLuint gpu_buffer;
+} test_menu;
+
+static inline void menu_forms_init(
+	struct menu_forms * __restrict const forms)
+{
+	forms->n_points = 0;
+	forms->cpu_buffer = myy_vector_rgb_points_init(256);
+	glGenBuffers(1, &forms->gpu_buffer);
+}
+
+static inline void menu_forms_set_projection(
+	union myy_4x4_matrix const * __restrict const projection)
+{
+	glUseProgram(myy_programs.menu_forms_id);
+	glUniformMatrix4fv(
+		myy_programs.menu_forms_unif_projection,
+		1,
+		GL_FALSE,
+		projection->raw_data);
+	glUseProgram(0);
+}
+
+static inline void menu_forms_reset(
+	struct menu_forms * __restrict const forms)
+{
+	myy_vector_rgb_points_reset(&forms->cpu_buffer);
+}
+
+static inline void menu_forms_send_to_gpu(
+	struct menu_forms * __restrict const forms)
+{
+	myy_vector_rgb_points * __restrict const points =
+		&forms->cpu_buffer;
+
+	glBindBuffer(GL_ARRAY_BUFFER, forms->gpu_buffer);
+	glBufferData(GL_ARRAY_BUFFER,
+		myy_vector_rgb_points_allocated_used(points),
+		myy_vector_rgb_points_data(points),
+		GL_DYNAMIC_DRAW);
+
+	forms->n_points = myy_vector_rgb_points_length(points);
+}
+
+static inline void menu_forms_draw(
+	struct menu_forms * __restrict const forms)
+{
+	glUseProgram(myy_programs.menu_forms_id);
+	glBindBuffer(GL_ARRAY_BUFFER, forms->gpu_buffer);
+	glVertexAttribPointer(
+		menu_forms_xyz, 4, GL_SHORT, GL_FALSE,
+		myy_vector_rgb_points_type_size(),
+		(gpu_buffer_offset_t)
+		(offsetof(struct simple_rgb_point, pos)));
+	glVertexAttribPointer(
+		menu_forms_in_color, 4, GL_UNSIGNED_BYTE, GL_TRUE,
+		myy_vector_rgb_points_type_size(),
+		(gpu_buffer_offset_t)
+		(offsetof(struct simple_rgb_point, color)));
+
+	glDrawArrays(GL_TRIANGLES, 0, forms->n_points);
+	glUseProgram(0);
+}
+
+static inline void menu_forms_add_arrow_left(
+	struct menu_forms * __restrict const forms,
+	position_S const pos,
+	struct rgba8 const color)
+{
+	myy_vector_rgb_points * __restrict const forms_buffer =
+		&forms->cpu_buffer;
+	position_S const a = {
+		.x = 0+pos.x,
+		.y = 16+pos.y
+	};
+	position_S const b = {
+		.x = 32+pos.x,
+		.y = 32+pos.y
+	};
+	position_S const c = {
+		.x = 32+pos.x,
+		.y = 0+pos.y
+	};
+	int16_t const depth = 0;
+
+	simple_rgb_triangle(forms_buffer, depth, a, b, c, color);
+}
+
+static inline void menu_forms_add_arrow_right(
+	struct menu_forms * __restrict const forms,
+	position_S const pos,
+	struct rgba8 const color)
+{
+	myy_vector_rgb_points * __restrict const forms_buffer =
+		&forms->cpu_buffer;
+	position_S const a = {
+		.x = 0+pos.x,
+		.y = 0+pos.y
+	};
+	position_S const b = {
+		.x = 0+pos.x,
+		.y = 32+pos.y
+	};
+	position_S const c = {
+		.x = 32+pos.x,
+		.y = 16+pos.y
+	};
+	int16_t const depth = 0;
+
+	simple_rgb_triangle(forms_buffer, depth, a, b, c, color);
+}
+
+static inline void menu_forms_add_bordered_rectangle(
+	struct menu_forms * __restrict const forms,
+	position_S const up_left, dimensions_S dimensions,
+	struct rgba8 const color, struct rgba8 borders_color)
+{
+	myy_vector_rgb_points * __restrict const forms_buffer =
+		&forms->cpu_buffer;
+
+	position_S const down_right = {
+		.x = up_left.x + dimensions.width,
+		.y = up_left.y + dimensions.height
+	};
+	int16_t zone_depth = 0;
+
+	simple_rgb_quad(forms_buffer, zone_depth, up_left, down_right, color);
+
+	position_S const border_up_left = {
+		.x = up_left.x - 1,
+		.y = up_left.y - 1
+	};
+	position_S const border_down_right = {
+		 // +1 to compensate the -1, +1 for the border
+		.x = border_up_left.x + dimensions.width + 2,
+		.y = border_up_left.y + dimensions.height + 2
+	};
+
+	int16_t const border_depth = 1; // Greater mean behind
+	simple_rgb_quad(forms_buffer, border_depth,
+		border_up_left, border_down_right, borders_color);
+}
+
 struct stencil_vertex {
 	int16_t x, y;
 };
@@ -35,6 +269,7 @@ union stencil_triangle {
 	uint16_t raw[6];
 };
 myy_vector_template(stencil_triangles, union stencil_triangle)
+
 
 struct simple_stencil {
 	GLuint points;
@@ -88,11 +323,7 @@ GLuint simple_stencil_stored_points(
 			&simple_stencil_object->cpu_buffer)
 		* 3;
 }
-void simple_stencil_set_stencil_functions()
-{
-	
-	
-}
+
 void simple_stencil_apply(
 	struct simple_stencil const * __restrict const simple_stencil_object)
 {
@@ -244,7 +475,7 @@ uint8_t const * __restrict const supported_armv8_instructions[] = {
 	(uint8_t const *) "LDR - Unsigned immediate",
 	(uint8_t const *) "LDP",
 	(uint8_t const *) "MADD",
-	(uint8_t const *) "MOV  - Register",
+	(uint8_t const *) "MOV - Register",
 	(uint8_t const *) "MOVK",
 	(uint8_t const *) "MOVN",
 	(uint8_t const *) "MOVW",
@@ -263,6 +494,8 @@ uint8_t const * __restrict const supported_armv8_instructions[] = {
 	(uint8_t const *) "SVC",
 	NULL
 };
+
+
 
 static void store_to_gl_string(
 	myy_vector_gl_chars * __restrict const gl_string,
@@ -318,15 +551,18 @@ struct text_buffer {
 	GLuint gpu_buffer;
 	position_S offset;
 	struct myy_rectangle offset_limits;
+	struct gl_text_infos * text_display_atlas;
 } menu_text;
 
 void text_buffer_init(
-	struct text_buffer * __restrict const text_buf)
+	struct text_buffer * __restrict const text_buf,
+	struct gl_text_infos * __restrict const text_atlas_properties)
 {
 	text_buf->points     = 0;
 	text_buf->cpu_buffer = myy_vector_gl_chars_init(1024);
 	glGenBuffers(1, &text_buf->gpu_buffer);
 	text_buf->offset     = position_S_struct(0,0);
+	text_buf->text_display_atlas = text_atlas_properties;
 	
 }
 
@@ -371,7 +607,7 @@ void text_buffer_reset(
 	myy_vector_gl_chars_reset(&text_buf->cpu_buffer);
 }
 
-void text_buffer_store(
+void text_buffer_add_cb(
 	void * text_buf,
 	struct myy_gl_text_quad const * __restrict const quads,
 	uint32_t const n_quads,
@@ -386,6 +622,45 @@ void text_buffer_store(
 	for (size_t i = 0; i < n_quads; i++) {
 		store_to_gl_string(gl_string, quads+i);
 	}
+}
+
+void text_buffer_add_string(
+	struct text_buffer * __restrict const text_buf,
+	uint8_t const * __restrict const utf8_string,
+	position_S * __restrict const position, /* TODO : Needs to be 3D or 4D... */
+	struct myy_text_properties const * __restrict const properties)
+{
+	myy_string_to_quads(
+		text_buf->text_display_atlas,
+		utf8_string,
+		position,
+		properties,
+		text_buffer_add_cb,
+		text_buf);
+}
+
+void text_buffer_add_strings_list(
+	struct text_buffer * __restrict const text_buf,
+	uint8_t const * __restrict const * __restrict const utf8_strings,
+	position_S * __restrict const start_position, /* TODO : Needs to be 3D or 4D... */
+	struct myy_text_properties const * __restrict const properties,
+	int16_t vertical_offset_between_strings)
+{
+	myy_strings_list_to_quads(
+		text_buf->text_display_atlas,
+		utf8_strings,
+		start_position,
+		properties,
+		text_buffer_add_cb,
+		text_buf,
+		vertical_offset_between_strings);
+}
+
+void text_buffer_store_to_gpu(
+	struct text_buffer * __restrict const gl_text_buffer)
+{
+	myy_vector_gl_chars * __restrict const gl_string =
+		(void *) (&gl_text_buffer->cpu_buffer);
 
 	glBindBuffer(GL_ARRAY_BUFFER, gl_text_buffer->gpu_buffer);
 	glBufferData(
@@ -395,6 +670,7 @@ void text_buffer_store(
 		GL_STATIC_DRAW);
 	gl_text_buffer->points = myy_vector_gl_chars_length(gl_string) * 6;
 }
+
 
 void text_buffer_draw(struct text_buffer const * __restrict const text_buf)
 {
@@ -434,6 +710,136 @@ void text_buffer_draw(struct text_buffer const * __restrict const text_buf)
 
 	glUseProgram(0);
 }
+
+
+struct menu_parts_handler {
+	struct text_buffer static_text;
+	struct menu_forms forms;
+	struct text_buffer input_text;
+};
+
+void menu_parts_handler_init(
+	struct menu_parts_handler * __restrict const handler,
+	struct gl_text_infos * __restrict const text_atlas_properties)
+{
+	text_buffer_init(&handler->static_text, text_atlas_properties);
+	text_buffer_init(&handler->input_text, text_atlas_properties);
+	menu_forms_init(&handler->forms);
+}
+
+void menu_part_generate_label(
+	union menu_part const * __restrict const label_part,
+	struct menu_parts_handler * __restrict const handler)
+{
+	struct menu_part_label const * __restrict const label =
+		&(label_part->label);
+	struct myy_text_properties props = {
+		.myy_text_flows = ((block_top_to_bottom << 8) | line_left_to_right),
+		.z_layer = 16,
+		.r = 255, .g = 255, .b = 255, .a = 255,
+		.user_metadata = NULL
+	};
+	position_S pos = position_S_2D_from_4D(label->pos);
+	text_buffer_add_string(&handler->static_text,
+		label->text,
+		&pos,
+		&props);
+}
+
+void menu_part_generate_not_implemented(
+	union menu_part const * __restrict const unknown_part,
+	struct menu_parts_handler * __restrict const handler)
+{
+}
+
+void menu_part_generate_input_numeric(
+	union menu_part const * __restrict const input_numeric_part,
+	struct menu_parts_handler * __restrict const handler)
+{
+	struct menu_part_input_numeric const * __restrict const input_numeric =
+		&(input_numeric_part->input_numeric);
+
+	position_S pos = position_S_2D_from_4D(input_numeric->pos);
+	menu_forms_add_bordered_rectangle(
+		&handler->forms,
+		pos,
+		dimensions_S_struct(50,32),
+		rgba8_color(0,0,0,255),
+		rgba8_color(120,120,120,255));
+}
+
+void menu_parts_reset(
+	struct menu_parts_handler * __restrict const handler)
+{
+	text_buffer_reset(&handler->static_text);
+	text_buffer_reset(&handler->input_text);
+	menu_forms_reset(&handler->forms);
+}
+
+void menu_parts_store_to_gpu(
+	struct menu_parts_handler * __restrict const handler)
+{
+	text_buffer_store_to_gpu(&handler->static_text);
+	text_buffer_store_to_gpu(&handler->input_text);
+	menu_forms_send_to_gpu(&handler->forms); /* TODO Normalize names */
+}
+
+void menu_parts_draw(
+	struct menu_parts_handler * __restrict const handler)
+{
+	menu_forms_draw(&handler->forms);
+	text_buffer_draw(&handler->static_text);
+	text_buffer_draw(&handler->input_text);
+}
+
+void (* menu_parts_generator[n_menu_part_type])(
+	union menu_part const * __restrict,
+	struct menu_parts_handler * __restrict) =
+{
+	[menu_part_type_invalid]        = menu_part_generate_not_implemented,
+	[menu_part_type_label]          = menu_part_generate_label,
+	[menu_part_type_toggle_button]  = menu_part_generate_not_implemented,
+	[menu_part_type_input_register] = menu_part_generate_not_implemented,
+	[menu_part_type_input_numeric]  = menu_part_generate_input_numeric,
+	[menu_part_type_end]            = menu_part_generate_not_implemented,
+};
+
+void menu_parts_handler_generate_menu(
+	union menu_part const * __restrict parts,
+	struct menu_parts_handler * __restrict const handler)
+{
+	union menu_part const * __restrict current_part =
+		(void *) (parts++);
+
+	struct menu_part_header current_header =
+		*((struct menu_part_header *) current_part);
+
+	menu_parts_reset(handler);
+	while(menu_part_type_valid(current_header.type)
+	      && current_header.type != menu_part_type_end)
+	{
+		menu_parts_generator[current_header.type](
+			current_part,
+			handler);
+		current_part = (void *) (parts++);
+		current_header = *((struct menu_part_header *) current_part);
+	}
+
+	menu_parts_store_to_gpu(handler);
+}
+
+struct arm64_mov_menu mov_menu = {
+	.to_label      =
+		MENU_LABEL(POSITION_4D_SIMPLE(800,100,0), (uint8_t const *) "To"),
+	.to_register   =
+		MENU_INPUT_REGISTER(POSITION_4D_SIMPLE(890,78, 0), "X"),
+	.from_label    = 
+		MENU_LABEL(POSITION_4D_SIMPLE(1000,100,0), (uint8_t const *) "From"),
+	.from_register =
+		MENU_INPUT_REGISTER(POSITION_4D_SIMPLE(1090,78,0), "X")
+};
+
+struct menu_parts_handler menu_handler;
 
 
 struct gl_text_infos gl_text_meta;
@@ -477,9 +883,9 @@ void myy_init_drawing()
 
 
 	/* Load the text quads into the GPU */
-	text_buffer_init(&menu_text);
+	text_buffer_init(&menu_text, &gl_text_meta);
 
-	struct myy_text_properties string_meta = {
+	struct myy_text_properties string_display_props = {
 		.myy_text_flows = ((block_top_to_bottom << 8) | line_left_to_right),
 		.z_layer = 16,
 		.r = 255, .g = 255, .b = 255, .a = 255,
@@ -500,11 +906,12 @@ void myy_init_drawing()
 	position_S text_position = position_S_struct(300,60);
 	int64_t offset_between_lines = 32;
 
-	myy_strings_list_to_quads(
-		loaded_infos, supported_armv8_instructions,
-		&text_position, &string_meta,
-		text_buffer_store, &menu_text, offset_between_lines);
+	text_buffer_add_strings_list(
+		&menu_text, supported_armv8_instructions,
+		&text_position, &string_display_props,
+		offset_between_lines);
 
+	text_buffer_store_to_gpu(&menu_text);
 	simple_stencil_init(&menu_stencil);
 	simple_stencil_set_projection(&matrix);
 	simple_stencil_start_preparing(&menu_stencil);
@@ -513,6 +920,26 @@ void myy_init_drawing()
 		position_S_struct(600, 600));
 	simple_stencil_done_preparing(&menu_stencil);
 
+	menu_forms_init(&test_menu);
+	menu_forms_set_projection(&matrix);
+	menu_forms_reset(&test_menu);
+	menu_forms_add_arrow_left(&test_menu,
+		position_S_struct(500,300),
+		rgba8_color(0, 175, 225, 255));
+	menu_forms_add_arrow_right(&test_menu,
+		position_S_struct(548,300),
+		rgba8_color(40, 40, 40, 255));
+	menu_forms_add_bordered_rectangle(&test_menu,
+		position_S_struct(500,348),
+		dimensions_S_struct(80, 32),
+		rgba8_color(60, 60, 60, 255),
+		rgba8_color(255,255,255,255));
+	menu_forms_send_to_gpu(&test_menu);
+
+	menu_parts_handler_init(&menu_handler, &gl_text_meta);
+	menu_parts_handler_generate_menu(
+		(union menu_part *) (&mov_menu),
+		&menu_handler);
 	glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
 }
 
@@ -534,6 +961,8 @@ void myy_draw() {
 	simple_stencil_apply(&menu_stencil);
 	text_buffer_draw(&menu_text);
 	simple_stencil_put_away(&menu_stencil);
+	menu_forms_draw(&test_menu);
+	menu_parts_draw(&menu_handler);
 }
 
 void myy_key(unsigned int keycode) {
@@ -561,3 +990,4 @@ void myy_move(int x, int y, int start_x, int start_y)
 {
 	
 }
+
