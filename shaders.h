@@ -35,7 +35,7 @@ struct {
 	GLint  simple_stencil_unif_projection;
 	GLuint menu_forms_id;
 	GLint  menu_forms_unif_projection;
-	GLint  menu_forms_unif_pos_offset;
+	GLint  menu_forms_unif_global_offset;
 } myy_programs;
 
 #endif

@@ -22,6 +22,9 @@
 #include <unistd.h>
 
 
+#define GLOBAL_BACKGROUND_COLOR 0.2f, 0.5f, 0.8f, 1.0f
+#define DEFAULT_OFFSET_4D position_S_4D_struct(0,0,0,0)
+
 typedef void * gpu_buffer_offset_t;
 
 GLuint glbuffer_text;
@@ -117,6 +120,7 @@ struct menu_forms {
 	GLuint n_points;
 	myy_vector_rgb_points cpu_buffer;
 	GLuint gpu_buffer;
+	position_S_4D offset;
 } test_menu;
 
 static inline void menu_forms_init(
@@ -125,6 +129,7 @@ static inline void menu_forms_init(
 	forms->n_points = 0;
 	forms->cpu_buffer = myy_vector_rgb_points_init(256);
 	glGenBuffers(1, &forms->gpu_buffer);
+	forms->offset = DEFAULT_OFFSET_4D;
 }
 
 static inline void menu_forms_set_projection(
@@ -145,7 +150,7 @@ static inline void menu_forms_reset(
 	myy_vector_rgb_points_reset(&forms->cpu_buffer);
 }
 
-static inline void menu_forms_send_to_gpu(
+static inline void menu_forms_store_to_gpu(
 	struct menu_forms * __restrict const forms)
 {
 	myy_vector_rgb_points * __restrict const points =
@@ -164,6 +169,11 @@ static inline void menu_forms_draw(
 	struct menu_forms * __restrict const forms)
 {
 	glUseProgram(myy_programs.menu_forms_id);
+	glUniform4f(myy_programs.menu_forms_unif_global_offset,
+		forms->offset.x,
+		forms->offset.y,
+		forms->offset.z,
+		forms->offset.w);
 	glBindBuffer(GL_ARRAY_BUFFER, forms->gpu_buffer);
 	glVertexAttribPointer(
 		menu_forms_xyz, 4, GL_SHORT, GL_FALSE,
@@ -178,6 +188,13 @@ static inline void menu_forms_draw(
 
 	glDrawArrays(GL_TRIANGLES, 0, forms->n_points);
 	glUseProgram(0);
+}
+
+static inline void menu_forms_set_global_position(
+	struct menu_forms * __restrict const forms,
+	position_S_4D position)
+{
+	forms->offset = position;
 }
 
 static inline void menu_forms_add_arrow_left(
@@ -549,7 +566,7 @@ struct text_buffer {
 	GLuint points;
 	myy_vector_gl_chars cpu_buffer;
 	GLuint gpu_buffer;
-	position_S offset;
+	position_S_4D offset;
 	struct myy_rectangle offset_limits;
 	struct gl_text_infos * text_display_atlas;
 } menu_text;
@@ -561,9 +578,8 @@ void text_buffer_init(
 	text_buf->points     = 0;
 	text_buf->cpu_buffer = myy_vector_gl_chars_init(1024);
 	glGenBuffers(1, &text_buf->gpu_buffer);
-	text_buf->offset     = position_S_struct(0,0);
+	text_buf->offset     = DEFAULT_OFFSET_4D;
 	text_buf->text_display_atlas = text_atlas_properties;
-	
 }
 
 __attribute__((unused))
@@ -592,13 +608,15 @@ void text_buffer_move(
 	struct text_buffer * __restrict const text_buf,
 	position_S relative_move)
 {
-	position_S pos = text_buf->offset;
+	position_S pos = position_S_2D_from_4D(text_buf->offset);
 
 	pos.x += relative_move.x;
 	pos.y += relative_move.y;
 
-	text_buf->offset =
+	position_S const clamped_position =
 		position_S_clamp_to_rectangle(pos, text_buf->offset_limits);
+	text_buf->offset = position_S_4D_struct(
+		clamped_position.x, clamped_position.y, 0, 0);
 }
 
 void text_buffer_reset(
@@ -671,6 +689,13 @@ void text_buffer_store_to_gpu(
 	gl_text_buffer->points = myy_vector_gl_chars_length(gl_string) * 6;
 }
 
+static inline void text_buffer_set_global_position(
+	struct text_buffer * __restrict const text_buf,
+	position_S_4D position)
+{
+	text_buf->offset = position;
+}
+
 
 void text_buffer_draw(struct text_buffer const * __restrict const text_buf)
 {
@@ -681,10 +706,10 @@ void text_buffer_draw(struct text_buffer const * __restrict const text_buf)
 
 	glUseProgram(myy_programs.text_id);
 
-	glUniform3f(myy_programs.text_unif_global_offset,
+	glUniform4f(myy_programs.text_unif_global_offset,
 		(float) (text_buf->offset.x),
 		(float) (text_buf->offset.y),
-		0.0f);
+		0.0f, 0.0f);
 	glBindBuffer(GL_ARRAY_BUFFER, text_buf->gpu_buffer);
 	glVertexAttribPointer(
 		text_xy, 2, GL_SHORT, GL_FALSE,
@@ -695,14 +720,14 @@ void text_buffer_draw(struct text_buffer const * __restrict const text_buf)
 		sizeof(struct gl_text_vertex),
 		(uint8_t *) (offsetof(struct gl_text_vertex, s)));
 
-	/* The shadow text <- WARNING GPU INTENSIVE ! */
+	/* The shadow text <- WARNING GPU INTENSIVE due to overdraw ! */
 
 	/* The text */
-	glUniform3f(myy_programs.text_unif_text_offset, 2.0f, 2.0f, 0.0f);
+	glUniform4f(myy_programs.text_unif_text_offset, 2.0f, 2.0f, 0.0f, 0.0f);
 	glUniform3f(myy_programs.text_unif_rgb, 0.1f, 0.1f, 0.1f);
 	glDrawArrays(GL_TRIANGLES, 0, n_points);
 
-	glUniform3f(myy_programs.text_unif_text_offset, 0.0f, 0.0f, -0.1f);
+	glUniform4f(myy_programs.text_unif_text_offset, 0.0f, 0.0f, -0.1f, 0.0f);
 	glUniform3f(myy_programs.text_unif_rgb, 0.95f, 0.95f, 0.95f);
 	glDrawArrays(GL_TRIANGLES, 0, n_points);
 
@@ -713,6 +738,7 @@ void text_buffer_draw(struct text_buffer const * __restrict const text_buf)
 
 
 struct menu_parts_handler {
+	position_S_4D pos;
 	struct text_buffer static_text;
 	struct menu_forms forms;
 	struct text_buffer input_text;
@@ -725,6 +751,18 @@ void menu_parts_handler_init(
 	text_buffer_init(&handler->static_text, text_atlas_properties);
 	text_buffer_init(&handler->input_text, text_atlas_properties);
 	menu_forms_init(&handler->forms);
+	handler->pos = position_S_4D_struct(880,0,0,0);
+	/* TODO Add a set position function */
+	text_buffer_set_global_position(&handler->input_text, handler->pos);
+	text_buffer_set_global_position(&handler->static_text, handler->pos);
+	menu_forms_set_global_position(&handler->forms, handler->pos);
+}
+
+static inline void menu_parts_handler_set_draw_position(
+	struct menu_parts_handler * __restrict const handler,
+	position_S_4D pos)
+{
+	handler->pos = pos;
 }
 
 void menu_part_generate_label(
@@ -781,13 +819,14 @@ void menu_parts_store_to_gpu(
 {
 	text_buffer_store_to_gpu(&handler->static_text);
 	text_buffer_store_to_gpu(&handler->input_text);
-	menu_forms_send_to_gpu(&handler->forms); /* TODO Normalize names */
+	menu_forms_store_to_gpu(&handler->forms);
 }
 
 void menu_parts_draw(
 	struct menu_parts_handler * __restrict const handler)
 {
 	menu_forms_draw(&handler->forms);
+
 	text_buffer_draw(&handler->static_text);
 	text_buffer_draw(&handler->input_text);
 }
@@ -803,6 +842,14 @@ void (* menu_parts_generator[n_menu_part_type])(
 	[menu_part_type_input_numeric]  = menu_part_generate_input_numeric,
 	[menu_part_type_end]            = menu_part_generate_not_implemented,
 };
+
+static void menu_parts_add_static_parts(
+	struct menu_parts_handler * __restrict const handler)
+{
+	simple_rgb_quad(&handler->forms.cpu_buffer, 15,
+		position_S_struct(0,0), position_S_struct(400,720),
+		rgba8_color(0,0,0,1));
+}
 
 void menu_parts_handler_generate_menu(
 	union menu_part const * __restrict parts,
@@ -825,18 +872,20 @@ void menu_parts_handler_generate_menu(
 		current_header = *((struct menu_part_header *) current_part);
 	}
 
+	menu_parts_add_static_parts(handler);
+
 	menu_parts_store_to_gpu(handler);
 }
 
 struct arm64_mov_menu mov_menu = {
 	.to_label      =
-		MENU_LABEL(POSITION_4D_SIMPLE(800,100,0), (uint8_t const *) "To"),
+		MENU_LABEL(POSITION_4D_SIMPLE(20,100,0), (uint8_t const *) "To"),
 	.to_register   =
-		MENU_INPUT_REGISTER(POSITION_4D_SIMPLE(890,78, 0), "X"),
+		MENU_INPUT_REGISTER(POSITION_4D_SIMPLE(70,78, 0), "X"),
 	.from_label    = 
-		MENU_LABEL(POSITION_4D_SIMPLE(1000,100,0), (uint8_t const *) "From"),
+		MENU_LABEL(POSITION_4D_SIMPLE(170,100,0), (uint8_t const *) "From"),
 	.from_register =
-		MENU_INPUT_REGISTER(POSITION_4D_SIMPLE(1090,78,0), "X")
+		MENU_INPUT_REGISTER(POSITION_4D_SIMPLE(220,78,0), "X")
 };
 
 struct menu_parts_handler menu_handler;
@@ -900,7 +949,7 @@ void myy_init_drawing()
 
 	struct myy_rectangle menu_move_limits = {
 		.left = 0,    .right  = 0,
-		.top  = -300, .bottom = 64
+		.top  = -600, .bottom = 64
 	};
 	text_buffer_set_offset_limits(&menu_text, menu_move_limits);
 	position_S text_position = position_S_struct(300,60);
@@ -934,13 +983,13 @@ void myy_init_drawing()
 		dimensions_S_struct(80, 32),
 		rgba8_color(60, 60, 60, 255),
 		rgba8_color(255,255,255,255));
-	menu_forms_send_to_gpu(&test_menu);
+	menu_forms_store_to_gpu(&test_menu);
 
 	menu_parts_handler_init(&menu_handler, &gl_text_meta);
 	menu_parts_handler_generate_menu(
 		(union menu_part *) (&mov_menu),
 		&menu_handler);
-	glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
+	glClearColor(GLOBAL_BACKGROUND_COLOR);
 }
 
 GLuint glbuffer_menu;

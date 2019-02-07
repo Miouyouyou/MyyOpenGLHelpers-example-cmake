@@ -6,10 +6,12 @@ attribute vec4 in_color;
 varying vec4 color;
 
 uniform mat4 projection;
-uniform vec4 pos_offset;
+
+/* Translate all the elements to these coordinates. */
+uniform vec4 global_offset;
 
 void main() {
-	gl_Position = projection * (xyz + pos_offset);
+	gl_Position = projection * (xyz + global_offset);
 	color = in_color;
 }
 
