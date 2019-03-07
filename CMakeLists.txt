@@ -6,7 +6,7 @@ project(OpenGLInterfaces)
 include(myy/CMakeCommonOptions.txt)
 
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 
 set (MyyMakeTests_VERSION_MAJOR 2)
 set (MyyMakeTests_VERSION_MINOR 0)

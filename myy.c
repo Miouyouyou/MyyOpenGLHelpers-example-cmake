@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 
 #define GLOBAL_BACKGROUND_COLOR 0.2f, 0.5f, 0.8f, 1.0f
@@ -1116,7 +1117,7 @@ void myy_init_drawing()
 	float inv_tex_height = 1.0f/loaded_infos->tex_height;
 
 	union myy_4x4_matrix matrix;
-	myy_matrix_4x4_ortho_layered_window_coords(&matrix, 1280, 720, 64);
+	myy_matrix_4x4_ortho_layered_window_coords(&matrix, 1920, 1080, 64);
 	glUseProgram(myy_programs.text_id);
 	glUniform1i(
 		myy_programs.text_unif_fonts_texture,
@@ -1196,12 +1197,12 @@ void myy_init_drawing()
 
 
 	myy_text_area_init(&area, &gl_text_meta, position_S_struct(32,32));
-	myy_text_edit_module_init(&module);
+	/*myy_text_edit_module_init(&module);
 	myy_text_edit_module_attach(&module, &area, 0);
 	myy_text_edit_module_add_text(
 		&module,
 		(uint8_t const * __restrict) "そういうことか",
-		sizeof("そういうことか"));
+		sizeof("そういうことか"));*/
 	
 	glClearColor(GLOBAL_BACKGROUND_COLOR);
 }
@@ -1261,5 +1262,5 @@ void myy_text(
 	size_t const text_size)
 {
 	LOG("Text %s\n", text);
-	myy_text_edit_module_add_text(&module, text, text_size);
+	//myy_text_edit_module_add_text(&module, text, text_size);
 }
