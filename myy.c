@@ -775,6 +775,7 @@ void menu_parts_handler_init(
 	text_buffer_init(&handler->static_text, text_atlas_properties);
 	text_buffer_init(&handler->input_text, text_atlas_properties);
 	menu_forms_init(&handler->forms);
+	/* TODO Remove fixed offset. Compute based on current resolution. */
 	handler->pos = position_S_4D_struct(880,0,0,0);
 	/* TODO Add a set position function */
 	text_buffer_set_global_position(&handler->input_text, handler->pos);
@@ -1242,13 +1243,17 @@ void myy_doubleclick(int x, int y, unsigned int button)
 		text_buffer_move(&menu_text, position_S_struct(0, -16));
 }
 
-
+void myy_trigger_text_input();
 void myy_click(int x, int y, unsigned int button)
 {
 	if (button == 4)
 		text_buffer_move(&menu_text, position_S_struct(0, 16));
 	if (button == 5)
 		text_buffer_move(&menu_text, position_S_struct(0, -16));
+
+	LOG("Click : %d, %d\n", x, y);
+	//if ((x > 950) & (x < 1000) & (y > 68) & (y < 100))
+		myy_trigger_text_input();
 }
 
 void myy_move(int x, int y, int start_x, int start_y)
