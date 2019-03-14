@@ -1099,7 +1099,10 @@ bool myy_text_edit_module_add_text(
 
 struct myy_text_area area;
 struct myy_text_edit_module module;
-void myy_init_drawing()
+void myy_init_drawing(
+	myy_states * __restrict state,
+	uintreg_t surface_width,
+	uintreg_t surface_height)
 {
 	myy_shaders_pack_load_all_programs_from_file(
 		"data/shaders.pack",
@@ -1221,7 +1224,11 @@ void prepare_menu() {
 	
 }
 
-void myy_draw() {
+void myy_draw(
+	myy_states * __restrict state, 
+	uintreg_t i,
+	uint64_t last_frame_delta_ns)
+{
 	glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);
 	simple_stencil_apply(&menu_stencil);
 	text_buffer_draw(&menu_text);
@@ -1231,11 +1238,18 @@ void myy_draw() {
 	myy_text_area_draw(&area);
 }
 
-void myy_key(unsigned int keycode) {
-	if (keycode == 1) { myy_user_quit(); }
+void myy_key(
+	myy_states * __restrict state,
+	unsigned int keycode)
+{
+	if (keycode == 1) { myy_user_quit(state); }
 }
 
-void myy_doubleclick(int x, int y, unsigned int button)
+void myy_doubleclick(
+	myy_states * __restrict state,
+	int x,
+	int y,
+	unsigned int button)
 {
 	if (button == 4)
 		text_buffer_move(&menu_text, position_S_struct(0, 16));
@@ -1243,8 +1257,9 @@ void myy_doubleclick(int x, int y, unsigned int button)
 		text_buffer_move(&menu_text, position_S_struct(0, -16));
 }
 
-void myy_trigger_text_input();
-void myy_click(int x, int y, unsigned int button)
+void myy_click(
+	myy_states * __restrict state,
+	int x, int y, unsigned int button)
 {
 	if (button == 4)
 		text_buffer_move(&menu_text, position_S_struct(0, 16));
@@ -1253,16 +1268,19 @@ void myy_click(int x, int y, unsigned int button)
 
 	LOG("Click : %d, %d\n", x, y);
 	//if ((x > 950) & (x < 1000) & (y > 68) & (y < 100))
-		myy_trigger_text_input();
+		myy_text_input_start(state);
 }
 
-void myy_move(int x, int y, int start_x, int start_y)
+void myy_move(	myy_states * __restrict state,
+	int x, int y,
+	int start_x, int start_y)
 {
 	
 }
 
 
 void myy_text(
+	myy_states * __restrict state,
 	char const * __restrict const text,
 	size_t const text_size)
 {
@@ -1271,6 +1289,7 @@ void myy_text(
 }
 
 void myy_editor_finished(
+	myy_states * __restrict const states,
 	uint8_t const * __restrict const string,
 	size_t const string_size)
 {
