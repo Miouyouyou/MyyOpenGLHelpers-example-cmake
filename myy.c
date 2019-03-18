@@ -224,6 +224,9 @@ void myy_text(
 	size_t const text_size)
 {
 	LOG("Text %s\n", text);
+	myy_text_area_append_text_utf8_characters(
+		&area,
+		text_size, (uint8_t const * __restrict) text);
 	//myy_text_edit_module_add_text(&module, text, text_size);
 }
 
@@ -232,17 +235,7 @@ void myy_editor_finished(
 	uint8_t const * __restrict const string,
 	size_t const string_size)
 {
-	struct myy_text_properties string_display_props = {
-		.myy_text_flows = ((block_top_to_bottom << 8) | line_left_to_right),
-		.z_layer = 16,
-		.r = 255, .g = 255, .b = 255, .a = 255,
-		.user_metadata = NULL		
-	};
-	text_buffer_reset(&area.display);
-	position_S pos = area.position;
-	text_buffer_add_n_chars_from_string(
-		&area.display,
-		string, string_size,
-		&pos, &string_display_props);
-	text_buffer_store_to_gpu(&area.display);
+	myy_text_area_set_text_utf8_characters(
+		&area,
+		string_size, string);
 }
