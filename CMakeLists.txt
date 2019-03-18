@@ -13,7 +13,11 @@ set (MyyMakeTests_VERSION_MINOR 0)
 
 set(MyyProjectSources
     myy.c
-    )
+    src/widgets/menu_forms.c
+    src/widgets/simple_forms.c
+    src/widgets/stencil.c
+    src/widgets/text_area.c
+    src/widgets/text_buffer.c)
 
 set(MyyProjectHeaders
    )
